@@ -67,6 +67,25 @@ public struct RelayConfig {
         return config
     }
 
+    /// The Hugging Face token downloads use: the config's `hf_token`, else the environment,
+    /// else the file `hf auth login` writes. Resolved at use, never written back to
+    /// config.json — a token read from the CLI must not be persisted in plaintext there.
+    public var resolvedHFToken: String? {
+        if !hfToken.isEmpty { return hfToken }
+        let environment = ProcessInfo.processInfo.environment
+        if let token = environment["HF_TOKEN"] ?? environment["HUGGING_FACE_HUB_TOKEN"], !token.isEmpty {
+            return token
+        }
+        // `hf auth login` writes ~/.cache/huggingface/token (older CLIs: ~/.huggingface/token).
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        for path in [".cache/huggingface/token", ".huggingface/token"] {
+            let stored = ((try? String(contentsOf: home.appendingPathComponent(path), encoding: .utf8)) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stored.isEmpty { return stored }
+        }
+        return nil
+    }
+
     public var modelRootURL: URL {
         modelRoot.isEmpty
             ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub", isDirectory: true)

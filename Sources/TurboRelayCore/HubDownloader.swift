@@ -32,10 +32,10 @@ nonisolated final class HubDownloader: Sendable {
         var errorDescription: String? {
             switch self {
             case .http(401, let repo):
-                "\(repo) needs a Hugging Face token: the repository is gated or private. Sign in with the Hugging Face CLI (hf auth login): Turbo MLX uses the token it saves."
+                "\(repo) needs a Hugging Face token: the repository is gated or private. Sign in with the Hugging Face CLI on this render Mac (`hf auth login`), or set `hf_token` in TurboRelay's config.json, then download again."
             // A gated repository answers 403 to a token whose account has not accepted its terms.
             case .http(403, let repo):
-                "\(repo) is gated: open huggingface.co/\(repo) signed in to the account of your Hugging Face token and accept its terms, then download again. Without a token, sign in with the Hugging Face CLI (hf auth login) first."
+                "\(repo) is gated: open huggingface.co/\(repo) signed in to the account of TurboRelay's Hugging Face token and accept its terms, then download again. Without a token, sign in on this render Mac with the Hugging Face CLI (`hf auth login`) first."
             case .http(404, let repo):
                 "\(repo) was not found on Hugging Face."
             case .http(let status, let repo):

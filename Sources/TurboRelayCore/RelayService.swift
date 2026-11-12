@@ -33,7 +33,7 @@ public final class RelayService: @unchecked Sendable {
         let downloads = DownloadManager(
             hubCache: config.modelRootURL,
             baseURL: config.hubBaseURL.isEmpty ? URL(string: "https://huggingface.co")! : (URL(string: config.hubBaseURL) ?? URL(fileURLWithPath: config.hubBaseURL)),
-            token: config.hfToken.isEmpty ? nil : config.hfToken,
+            token: config.resolvedHFToken,
             customStore: home.appendingPathComponent("custom-models.json")
         )
         downloads.onEvent = { [weak self] modelID, status, bytes, total, message in
