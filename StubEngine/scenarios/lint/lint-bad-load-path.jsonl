@@ -1,0 +1,1 @@
+{"cmd": "load", "model": {"family": "z-image-turbo", "path": "/Users/mini/Library/Containers/io.github.rinste.TurboMLX/Data/.cache/huggingface/hub/models--z", "name": "z-image-turbo-mflux-q4", "variant": "", "low_ram": false}}

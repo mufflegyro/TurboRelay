@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "22222222-2222-4222-8222-222222222222", "model": {"family": "z-image-turbo", "path": "/server/hf/hub/models--mflux-community--z-image-turbo-mflux-q4", "name": "z-image-turbo-mflux-q4", "variant": "", "low_ram": false}, "params": {"prompt": "a slow render to be cancelled", "seed": 7, "width": 1024, "height": 1024, "steps": 12, "guidance": 1, "output": "__OUTPUT__"}}
+{"cmd": "shutdown"}

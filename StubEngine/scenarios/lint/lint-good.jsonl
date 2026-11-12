@@ -1,0 +1,6 @@
+{"cmd": "generate", "id": "44444444-4444-4444-8444-444444444444", "model": {"family": "z-image-turbo", "name": "z-image-turbo-mflux-q4", "variant": "", "low_ram": true}, "params": {"prompt": "a puffin standing on a cliff", "seed": 42, "width": 1024, "height": 1024, "steps": 9, "guidance": 1, "preview": true, "image": {"upload": "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}, "loras": [{"upload": "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22", "scale": 0.8}]}}
+{"event": "preview", "id": "44444444-4444-4444-8444-444444444444", "step": 2, "data": "iVBORw0KGgoAAAANSUhEUg=="}
+{"event": "done", "id": "44444444-4444-4444-8444-444444444444", "file_id": "job-4444-result", "size": 512, "media_type": "image/png", "seed": 42, "width": 1024, "height": 1024, "seconds": 3.5, "peak_memory": 8500000000, "timings": {"load": 0.4, "denoise": 2.1}}
+{"cmd": "load", "model": {"family": "flux2-klein", "name": "flux2-klein-4b-mflux-q4", "variant": "", "low_ram": false}}
+{"cmd": "cancel", "id": "44444444-4444-4444-8444-444444444444"}
+{"cmd": "unload"}

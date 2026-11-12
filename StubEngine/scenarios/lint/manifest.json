@@ -1,0 +1,9 @@
+{
+  "lint-good.jsonl": {"exit": 0},
+  "lint-bad-load-path.jsonl": {"exit": 1, "contains": "load.model.path"},
+  "lint-bad-model-path.jsonl": {"exit": 1, "contains": "generate.model.path"},
+  "lint-bad-output.jsonl": {"exit": 1, "contains": "params.output"},
+  "lint-bad-image.jsonl": {"exit": 1, "contains": "params.image"},
+  "lint-bad-preview.jsonl": {"exit": 1, "contains": "preview.path"},
+  "lint-bad-done.jsonl": {"exit": 1, "contains": "done.path"}
+}
