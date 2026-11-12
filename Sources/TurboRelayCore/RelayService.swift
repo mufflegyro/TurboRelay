@@ -33,7 +33,8 @@ public final class RelayService: @unchecked Sendable {
         let downloads = DownloadManager(
             hubCache: config.modelRootURL,
             baseURL: config.hubBaseURL.isEmpty ? URL(string: "https://huggingface.co")! : (URL(string: config.hubBaseURL) ?? URL(fileURLWithPath: config.hubBaseURL)),
-            token: config.hfToken.isEmpty ? nil : config.hfToken
+            token: config.hfToken.isEmpty ? nil : config.hfToken,
+            customStore: home.appendingPathComponent("custom-models.json")
         )
         downloads.onEvent = { [weak self] modelID, status, bytes, total, message in
             guard let self else { return }
@@ -152,6 +153,13 @@ public final class RelayService: @unchecked Sendable {
             }
         case ("POST", let path) where path.hasPrefix("/models/") && path.hasSuffix("/download"):
             let id = String(path.dropFirst("/models/".count).dropLast("/download".count)).removingPercentEncoding ?? ""
+            // A model the built-in catalog does not ship (the client added it by hand): the
+            // request carries its descriptor, so the relay can download it too. Registering is
+            // idempotent; a built-in id keeps the catalog's own descriptor.
+            if let descriptor = (try? JSONDecoder().decode(ModelDescriptor.self, from: request.body)),
+               descriptor.id == id || descriptor.repo == id {
+                downloads?.register(descriptor)
+            }
             if let problem = downloads?.start(id) {
                 respond(.error(409, problem))
             } else {

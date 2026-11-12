@@ -216,6 +216,37 @@ def main() -> None:
         status, body = http("POST", port, "/models/nope/missing/download", "ef" * 32)
         check("download of an unknown id is refused", status == 409, f"{status} {body[:100]}")
 
+        # A model added by hand on the client (not in the built-in catalog): the request
+        # carries its descriptor, the relay registers it and downloads it (A10).
+        custom_id = "OpenMOSS-Team/MOSS-Image-SFT"
+        MockHub.repos[custom_id] = make_repo([
+            ("transformer/model.safetensors", 400_000), ("transformer/config.json", 300),
+            ("text_encoder/config.json", 200), ("vae/config.json", 200),
+            ("tokenizer/tokenizer.json", 600),
+        ])
+        descriptor = {
+            "name": "MOSS-Image (added by hand)", "detail": "",
+            "family": "moss-image",
+            "source": {"huggingFace": {"repo": custom_id}},
+            "revision": None, "sizeBytes": None, "qualitySizeBytes": None, "variant": None,
+            "quantize": 8, "license": None, "recommendedMemoryGB": 16,
+            "isBuiltIn": False, "isRecommended": False,
+        }
+        encoded_custom = urllib.parse.quote(custom_id, safe="")
+        status, body = http("POST", port, f"/models/{encoded_custom}/download", "ef" * 32,
+                            json.dumps(descriptor).encode())
+        check("a custom model downloads from its descriptor", status == 200, f"{status} {body[:150]}")
+        custom_state = None
+        for _ in range(40):
+            models = json.loads(http("GET", port, "/models", "ef" * 32)[1])["models"]
+            entry = next((m for m in models if m["id"] == custom_id), None)
+            if entry:
+                custom_state = entry["state"]
+                if custom_state in ("downloaded", "failed"):
+                    break
+            time.sleep(0.25)
+        check("the custom model is listed and downloaded", custom_state == "downloaded", str(custom_state))
+
         # Happy path: download the z-image model, watch progress events.
         encoded = urllib.parse.quote(z_id, safe="")
         status, body = http("POST", port, f"/models/{encoded}/download", "ef" * 32)

@@ -35,6 +35,8 @@ public final class DownloadManager: @unchecked Sendable {
     private let locator: ModelLocator
     private let baseURL: URL
     private let token: String?
+    /// Where descriptors of client-added (non-built-in) models are kept across restarts.
+    private let customStore: URL?
     /// Set by the service: every state change and progress tick lands on the wire.
     public var onEvent: ((_ modelID: String, _ status: String, _ bytes: Int64, _ total: Int64, _ message: String?) -> Void)?
     public var onChange: (() -> Void)?
@@ -42,12 +44,21 @@ public final class DownloadManager: @unchecked Sendable {
     /// Injected for tests; nil in production (the volume's real free space decides).
     var freeSpaceOverride: Int64?
 
-    public init(hubCache: URL, baseURL: URL = URL(string: "https://huggingface.co")!, token: String?) {
+    public init(hubCache: URL, baseURL: URL = URL(string: "https://huggingface.co")!, token: String?,
+                customStore: URL? = nil) {
         self.hubCache = hubCache
         self.locator = ModelLocator(hub: hubCache)
         self.baseURL = baseURL
         self.token = token
+        self.customStore = customStore
         for descriptor in ModelCatalog.builtIn where descriptor.repo != nil {
+            entries[descriptor.id] = Entry(descriptor: descriptor, companion: descriptor.family.companion,
+                                           familyHasQualityFiles: !descriptor.family.qualityFiles.isEmpty)
+        }
+        // Models added by hand on the client (a custom repository): the relay keeps the
+        // descriptors it was asked to download, so they survive a restart and stay in
+        // /models — the client's picker keys off that listing.
+        for descriptor in Self.loadCustom(customStore) where entries[descriptor.id] == nil {
             entries[descriptor.id] = Entry(descriptor: descriptor, companion: descriptor.family.companion,
                                            familyHasQualityFiles: !descriptor.family.qualityFiles.isEmpty)
         }
@@ -55,11 +66,44 @@ public final class DownloadManager: @unchecked Sendable {
         // user's own cache) must not report "not downloaded": the client's picker keys off
         // this state. The completeness check needs every file the catalog wants, so a
         // partial or interrupted download stays "not downloaded" (a re-download resumes).
-        for descriptor in ModelCatalog.builtIn where descriptor.repo != nil {
+        for entry in entries.values {
+            let descriptor = entry.descriptor
             if locator.complete(of: descriptor.id, family: descriptor.family, revision: descriptor.revision ?? "main") {
                 entries[descriptor.id]?.state = .downloaded
             }
         }
+    }
+
+    /// Registers a model the built-in catalog does not ship (the client sent its descriptor
+    /// with the download request). Returns the id; a known model keeps its own descriptor.
+    @discardableResult
+    func register(_ descriptor: ModelDescriptor) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if entries[descriptor.id] == nil {
+            entries[descriptor.id] = Entry(descriptor: descriptor, companion: descriptor.family.companion,
+                                           familyHasQualityFiles: !descriptor.family.qualityFiles.isEmpty)
+            if locator.complete(of: descriptor.id, family: descriptor.family,
+                                revision: descriptor.revision ?? "main") {
+                entries[descriptor.id]?.state = .downloaded
+            }
+            Self.saveCustom(customStore, descriptors: entries.values.filter { !$0.descriptor.isBuiltIn }.map(\.descriptor))
+        }
+        return descriptor.id
+    }
+
+    // MARK: Custom descriptors (client-added models)
+
+    private static func loadCustom(_ url: URL?) -> [ModelDescriptor] {
+        guard let url, let data = try? Data(contentsOf: url),
+              let descriptors = try? JSONDecoder().decode([ModelDescriptor].self, from: data)
+        else { return [] }
+        return descriptors.filter { $0.repo != nil }
+    }
+
+    private static func saveCustom(_ url: URL?, descriptors: [ModelDescriptor]) {
+        guard let url, let data = try? JSONEncoder().encode(descriptors) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     // MARK: - /models
@@ -67,8 +111,13 @@ public final class DownloadManager: @unchecked Sendable {
     public func modelsView() -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        return ModelCatalog.builtIn.compactMap { descriptor in
-            guard let entry = entries[descriptor.id] else { return nil }
+        // Built-ins in catalog order, then any client-added models (sorted by id) after.
+        let builtIns = ModelCatalog.builtIn.compactMap { entries[$0.id] }
+        let custom = entries.values
+            .filter { !$0.descriptor.isBuiltIn }
+            .sorted { $0.descriptor.id < $1.descriptor.id }
+        return (builtIns + custom).compactMap { entry in
+            let descriptor = entry.descriptor
             var view: [String: Any] = [
                 "id": descriptor.id,
                 "family": descriptor.family.rawValue,

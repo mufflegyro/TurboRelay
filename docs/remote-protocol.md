@@ -47,7 +47,7 @@ Everything not amended here behaves exactly as it does over the pipe.
 | `/jobs` | GET | Job registry: for reconnect and resume |
 | `/log` | GET | The server's ring buffer of engine + relay log lines |
 | `/models` | GET | Model catalog with per-model server-side download state |
-| `/models/{id}/download` | POST | Start downloading a catalog model (M3) |
+| `/models/{id}/download` | POST | Start downloading a catalog model, or a model added by hand (M3) |
 | `/models/{id}/download/cancel` | POST | Cancel that download (M3) |
 
 `protocol_version` starts at **1**. A client that does not speak the server's
@@ -243,6 +243,16 @@ than inheriting it (A8).
 Remote mode's client model picker reads this endpoint; the Download action
 routes here instead of the local `DownloadCenter`; availability is judged
 against the server's RAM and disk, not the client's.
+
+**Models added by hand (A10).** The built-in catalog is not the whole story:
+the client can add any Hugging Face repository as a custom model. Those are
+not in the server's catalog, so `POST /models/{id}/download` accepts the
+client's `ModelDescriptor` as a JSON body. The server registers it (idempotent;
+a built-in id keeps the catalog's descriptor), persists it to
+`custom-models.json` in the relay home so it survives a restart, includes it in
+`GET /models` after the built-ins, and then downloads it like any other model.
+Without a body an unknown id is still refused with
+`no such model in the catalog`.
 
 ## Log relay
 
