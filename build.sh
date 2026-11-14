@@ -55,6 +55,13 @@ else
     echo "   no turbo-engine build found — bundling the stub engine (loopback tests only)"
 fi
 
+# The mflux fallback worker's script, as a bundle resource. Its Python environment is not
+# bundled: the relay creates ~/Library/Application Support/TurboRelay/mflux-venv and runs
+# `<venv>/bin/python <bundle>/Contents/Resources/worker.py serve`.
+mkdir -p "$APP/Contents/Resources"
+cp mflux-worker/worker.py "$APP/Contents/Resources/worker.py"
+echo "   embedded the mflux worker (worker.py)"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

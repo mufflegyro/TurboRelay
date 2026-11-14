@@ -27,6 +27,10 @@ ROOT = Path(__file__).resolve().parents[1]
 RELAY = ROOT / ".build" / "release" / "RelayServer"
 LINT = ROOT / "StubEngine" / ".build" / "release" / "RelayLint"
 STUB = ROOT / "StubEngine" / ".build" / "release" / "StubEngine"
+# The mflux fallback worker, run against its fake mflux/MLX packages: routing and the
+# two-engine switch are exercised without a model (mflux-worker/README.md).
+WORKER = ROOT / "mflux-worker" / "worker.py"
+FAKE_MFLUX = ROOT / "mflux-worker" / "conformance" / "fake"
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TOKEN = "ab" * 32
@@ -181,12 +185,23 @@ def main() -> None:
     fake_model = model_root / "models--mflux-community--z-image-turbo-mflux-q4" / "snapshots" / "cafe1234"
     fake_model.mkdir(parents=True)
     (fake_model / "model.safetensors").write_bytes(b"stub checkpoint bytes")
+    # The mflux routing checks generate Krea 2: the locator needs a snapshot on disk, and the
+    # worker's fake mflux reads no weights.
+    krea_model = model_root / "models--mflux-community--krea-2-turbo-mflux-q4" / "snapshots" / "beef0001"
+    krea_model.mkdir(parents=True)
+    (krea_model / "model.safetensors").write_bytes(b"fake krea pack")
 
     (staging_home / "config.json").write_text(json.dumps({
         "port": port, "token": token, "engine_path": str(STUB), "model_root": str(model_root),
+        "mflux_python": sys.executable, "mflux_worker": str(WORKER),
+        # A small step delay keeps the native job alive long enough for the routing checks
+        # below to submit work while it runs (and for the crash test to kill it mid-job).
+        "engine_args": ["--step-delay-ms", "10"],
     }))
 
-    server = subprocess.Popen([str(RELAY)], env={**os.environ, "TURBORELAY_HOME": str(staging_home)},
+    server = subprocess.Popen([str(RELAY)],
+                              env={**os.environ, "TURBORELAY_HOME": str(staging_home),
+                                   "PYTHONPATH": str(FAKE_MFLUX)},
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     wire_lines: list[str] = []
     try:
@@ -214,6 +229,7 @@ def main() -> None:
         check("hello speaks protocol 1", hello.get("protocol_version") == 1)
         check("hello reports memory in bytes", isinstance(hello.get("memory_bytes"), int) and hello["memory_bytes"] > 0)
         check("hello carries the stub engine's families", "z-image-turbo" in hello.get("families", []))
+        check("hello advertises the mflux worker's families", "krea-2" in hello.get("families", []), str(hello.get("families")))
 
         # Uploads: probe then PUT, content-addressed.
         upload_bytes = bytes((i * 37 + 11) % 256 for i in range(512))
@@ -229,7 +245,10 @@ def main() -> None:
 
         # M3 endpoints: the catalog is live.
         status, body = http("GET", port, "/models")
-        check("GET /models lists the server catalog", status == 200 and len(json.loads(body)["models"]) >= 14, str(status))
+        catalog = json.loads(body)["models"] if status == 200 else []
+        check("GET /models lists the server catalog", status == 200 and len(catalog) >= 14, str(status))
+        check("every /models entry names its engine (turbo or mflux)",
+              catalog and all(entry.get("engine") in ("turbo", "mflux") for entry in catalog))
 
         # A second upload for a LoRA handle.
         lora_bytes = b"lora-weights-bytes" * 8
@@ -298,6 +317,89 @@ def main() -> None:
         jobs = json.loads(body)["jobs"]
         match = [j for j in jobs if j["id"] == job_id]
         check("the job registry shows the finished job", match and match[0]["status"] == "done" and match[0]["file_id"] == file_id)
+
+        # Two engines, one model at a time (plan Part 2): an mflux family goes to the Python
+        # worker; the next native family switches back, restarting the stub it stopped.
+        mflux_job = "e2e5555-5555-4555-8555-555555555555"
+        ws.send_text(json.dumps({"cmd": "generate", "id": mflux_job, "model": {
+            "family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "variant": "", "low_ram": False
+        }, "params": {"prompt": "a red fox in a sunlit clearing", "seed": 42, "width": 64, "height": 64,
+                      "steps": 4, "guidance": 1}}))
+        mflux_done = None
+        mflux_events: list[dict] = []
+        deadline = time.time() + 30
+        while mflux_done is None and time.time() < deadline:
+            message = ws.recv_message()
+            if message is None:
+                break
+            wire_lines.append(message)
+            event = json.loads(message)
+            mflux_events.append(event)
+            if event.get("event") == "done" and event.get("id") == mflux_job:
+                mflux_done = event
+        check("an mflux family reaches the Python worker", mflux_done is not None)
+        ready_events = [e for e in mflux_events if e.get("event") == "ready"]
+        check("the mflux engine announces its own name",
+              bool(ready_events) and str(ready_events[-1].get("engine", "")).startswith("mflux"),
+              str(ready_events[-1:]))
+        if mflux_done:
+            status, payload = http("GET", port, f"/files/{mflux_done['file_id']}")
+            ok, detail = is_valid_png(payload)
+            check("the mflux result is a real PNG", status == 200 and ok, detail)
+            status, body = http("GET", port, "/jobs")
+            entry = next((j for j in json.loads(body)["jobs"] if j["id"] == mflux_job), None)
+            check("the registry names the engine that ran the job",
+                  entry is not None and entry.get("engine") == "mflux", str(entry))
+
+        native_again = "e2e6666-6666-4666-8666-666666666666"
+        ws.send_text(json.dumps({"cmd": "generate", "id": native_again, "model": {
+            "family": "z-image-turbo", "name": "mflux-community/z-image-turbo-mflux-q4"
+        }, "params": {"prompt": "back to the stub engine", "seed": 3, "width": 64, "height": 64,
+                      "steps": 2, "guidance": 1}}))
+        native_done = None
+        deadline = time.time() + 30
+        while native_done is None and time.time() < deadline:
+            message = ws.recv_message()
+            if message is None:
+                break
+            wire_lines.append(message)
+            event = json.loads(message)
+            if event.get("event") == "done" and event.get("id") == native_again:
+                native_done = event
+        check("a native family switches back to turbo-engine", native_done is not None)
+        status, body = http("GET", port, "/jobs")
+        entry = next((j for j in json.loads(body)["jobs"] if j["id"] == native_again), None)
+        check("the native job is recorded as turbo", entry is not None and entry.get("engine") == "turbo", str(entry))
+        status, body = http("GET", port, "/hello")
+        families = json.loads(body).get("families", [])
+        check("hello carries both engines' families", "z-image-turbo" in families and "krea-2" in families, str(families))
+
+        # One model at a time (A9): an mflux job submitted while a native job runs waits for
+        # it and then switches — the running native job is not killed.
+        slow_job = "e2e7777-7777-4777-8777-777777777777"
+        queued_job = "e2e8888-8888-4888-8888-888888888888"
+        ws.send_text(json.dumps({"cmd": "generate", "id": slow_job, "model": {
+            "family": "z-image-turbo", "name": "mflux-community/z-image-turbo-mflux-q4"
+        }, "params": {"prompt": "a slow native job", "seed": 8, "width": 64, "height": 64,
+                      "steps": 12, "guidance": 1}}))
+        ws.send_text(json.dumps({"cmd": "generate", "id": queued_job, "model": {
+            "family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "variant": "", "low_ram": False
+        }, "params": {"prompt": "queued behind the native job", "seed": 9, "width": 64, "height": 64,
+                      "steps": 4, "guidance": 1}}))
+        finished: dict[str, dict] = {}
+        order: list[str] = []
+        deadline = time.time() + 30
+        while len(finished) < 2 and time.time() < deadline:
+            message = ws.recv_message()
+            if message is None:
+                break
+            wire_lines.append(message)
+            event = json.loads(message)
+            if event.get("event") == "done" and event.get("id") in (slow_job, queued_job):
+                finished[event["id"]] = event
+                order.append(event["id"])
+        check("both queued jobs finish across the engine switch", set(finished) == {slow_job, queued_job}, str(sorted(finished)))
+        check("the running job finishes before the switch", order == [slow_job, queued_job], str(order))
 
         # Path-hostility defense in depth: a command smuggling client paths is refused.
         ws.send_text(json.dumps({"cmd": "generate", "id": "e2e2222-2222-4222-8222-222222222222", "model": {

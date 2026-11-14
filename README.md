@@ -7,15 +7,19 @@ other Mac on the network. The protocol both sides speak is specified in
 
 ```
 Turbo MLX client (weak Mac)          TurboRelay (this, M4 Max)
-SwiftUI ── RemoteBackend ── WS+HTTP ── bridge ⇄ turbo-engine serve ── MLX Swift/Metal
+SwiftUI ── RemoteBackend ── WS+HTTP ── bridge ─┬─ turbo-engine serve ── MLX Swift/Metal
+                                               └─ mflux worker ──────── mflux/MLX (Python)
 ```
+
+One model at a time: the router stops the engine that does not serve the job's family, so
+only the active engine holds weights.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `docs/remote-protocol.md` | The wire protocol spec (amendments A1–A8 included) |
-| `Sources/TurboRelayCore/` | Config, HTTP+WS listener, engine supervisor, wire⇄engine bridge, model locator |
+| `docs/remote-protocol.md` | The wire protocol spec (amendments A1–A9 included) |
+| `Sources/TurboRelayCore/` | Config, HTTP+WS listener, engine supervisor + router, wire⇄engine bridge, model locator |
 | `Sources/RelayServer/` | Headless server (same core; used by the e2e tests) |
 | `Sources/TurboRelayApp/` | The menu bar app (MenuBarExtra) |
 | `mflux-worker/` | The fallback engine: mflux behind turbo-engine's protocol, for Krea 2 and Qwen-Image 2.1 |
@@ -34,7 +38,8 @@ python3 tests/e2e.py       # loopback end-to-end (needs a release build)
 
 The bundle embeds the real `turbo-engine` when `../turbo-mlx/.build/release/turbo-engine`
 exists (build the Engine package there first), otherwise the stub engine — so the full
-plumbing runs before any model is downloaded.
+plumbing runs before any model is downloaded. It also embeds `mflux-worker/worker.py`; the
+worker's Python environment lives outside the bundle and is installed lazily (Part 4).
 
 ## Settings
 
@@ -43,7 +48,7 @@ Everything lives in `$TURBORELAY_HOME` (default
 
 | File/dir | What |
 |---|---|
-| `config.json` | `port` (7700), `token` (the pairing token, generated at first launch), `engine_path`, `model_root` |
+| `config.json` | `port` (7700), `token` (the pairing token, generated at first launch), `engine_path`, `model_root`, `mflux_python` (empty = `<home>/mflux-venv/bin/python`), `mflux_worker` (empty = the bundled `worker.py`) |
 | `staging/results/` | Finished jobs, streamed to clients via `GET /files/{file_id}` (last 20 kept) |
 | `staging/uploads/<aa>/<sha256>` | Content-addressed uploads (reference images, last frames, LoRAs) |
 
@@ -64,10 +69,12 @@ settings.
 - **M6 real-model render + two-Mac checklist** — checklist done
   (`docs/two-mac-checklist.md`); the real-model render runs on your Macs, per the
   loopback-only rule
-- **mflux fallback (plan Part 1)** — the worker is in `mflux-worker/`: Krea 2 and
+- **mflux fallback (plan Parts 1–2)** — the worker is in `mflux-worker/`: Krea 2 and
   Qwen-Image 2.1 (base/Turbo) behind the engine protocol, pinned mflux 0.24.0, prompt cache
-  cleared between jobs, suite green against fake mflux/MLX. Relay routing (Part 2), the
-  catalog entries and the lazy venv are not wired yet.
+  cleared between jobs, suite green against fake mflux/MLX. The relay routes those families
+  to it (`EngineRouter`), keeps one model resident by stopping the other engine on a switch,
+  reports `engine` on `/models` and each job, and composes `ready`/`/hello` from both engines.
+  The catalog entries, client badge and lazy venv are Parts 3–4.
 
 Failure paths are covered too: engine crash mid-job fails the running job and restarts the
 engine (M2 e2e), and a disconnect mid-job reconnects on its own and delivers the finished

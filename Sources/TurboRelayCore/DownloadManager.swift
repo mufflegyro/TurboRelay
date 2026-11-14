@@ -125,6 +125,7 @@ public final class DownloadManager: @unchecked Sendable {
                 "min_ram_gb": descriptor.recommendedMemoryGB ?? 0,
                 "download_gb": Double(descriptor.sizeBytes ?? 0) / 1_000_000_000,
                 "media": descriptor.family.media.rawValue,
+                "engine": descriptor.family.engine.rawValue,
             ]
             switch entry.state {
             case .notDownloaded:

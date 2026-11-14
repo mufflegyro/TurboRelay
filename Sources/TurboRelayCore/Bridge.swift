@@ -2,13 +2,17 @@ import Foundation
 import CryptoKit
 
 /// Translates between the wire protocol (network, TurboRelay/docs/remote-protocol.md) and
-/// the engine protocol (turbo-engine's stdin/stdout JSON lines):
+/// the engine protocol (turbo-engine's stdin/stdout JSON lines), over one or two engines:
 ///
-///   wire command in → path-hostility check → resolve model paths + upload handles →
-///   rewrite `output` into the staging area → engine stdin
+///   wire command in → path-hostility check → family → engine → resolve model paths + upload
+///   handles → rewrite `output` into the staging area → that engine's stdin
 ///
 ///   engine event out → strip file paths into handles (`file_id`) or bytes (`preview.data`)
 ///   → broadcast on the wire, update the job registry
+///
+/// The native `turbo-engine` serves the catalog; the mflux worker serves Krea 2 and
+/// Qwen-Image 2.1 (`ModelFamily.mfluxFamilyNames`). `EngineRouter` owns the one-model-at-a-time
+/// rule between them.
 ///
 /// All translation per the amendments A1 (uploads), A2 (model-id resolution, bytes not
 /// paths), A3 (previews), A5 (families), A8 (deliberate engine environment).
@@ -21,6 +25,7 @@ public final class Bridge: @unchecked Sendable {
         var submittedAt: Date
         var fileID: String?
         var error: String?
+        var engine: ModelEngine
     }
 
     struct StagedFile {
@@ -33,11 +38,13 @@ public final class Bridge: @unchecked Sendable {
     private var files: [String: StagedFile] = [:]
     private var fileOrder: [String] = []
     private var pathToName: [String: String] = [:]
-    private var readyInfo: [String: Any]?
+    /// Each engine's last `ready` event, keyed by engine: `/hello` and the greeting compose
+    /// the active engine's strings with the union of the families the relay can serve.
+    private var readyInfo: [ModelEngine: [String: Any]] = [:]
     private var logLines: [String] = []
     private var lastLoadedName: String?
     private var activeJobs = 0
-    /// The render Mac's memory in bytes, from the engine's ready event (A4).
+    /// The render Mac's memory in bytes, from whichever engine is ready (A4).
     private var serverMemoryBytes: Int64 = 0
     /// Content-addressed uploads each job references: released when the job ends, and
     /// unreferenced files older than an hour are evicted (spec §Uploads).
@@ -46,62 +53,95 @@ public final class Bridge: @unchecked Sendable {
     private let keepAwake = KeepAwake(reason: "TurboRelay is generating for a client")
     private let resultsLimit = 20
 
-    public let supervisor: EngineSupervisor
+    public let router: EngineRouter
     private let locator: ModelLocator
     private let home: URL
     /// Set by the service: sends a wire line to every connected client.
     public var broadcast: ((String) -> Void)?
     public var onChange: (() -> Void)?
 
-    public init(home: URL, modelRoot: URL, enginePath: String, environment: [String: String], engineArguments: [String] = []) {
+    public init(home: URL, modelRoot: URL, router: EngineRouter) {
         self.home = home
         self.locator = ModelLocator(hub: modelRoot)
-        let supervisor = EngineSupervisor(enginePath: enginePath, environment: environment, arguments: engineArguments)
-        self.supervisor = supervisor
-        supervisor.onEvent = { [weak self] line in self?.engineEvent(line) }
-        supervisor.onLog = { [weak self] line in self?.engineLog(line) }
-        supervisor.onExit = { [weak self] in self?.engineExited() }
+        self.router = router
+        router.onEvent = { [weak self] engine, line in self?.engineEvent(engine, line) }
+        router.onLog = { [weak self] engine, line in self?.engineLog(engine, line) }
+        router.onExit = { [weak self] engine, intentional in
+            self?.engineExited(engine, intentional: intentional)
+        }
+        router.onActiveChange = { [weak self] in self?.onChange?() }
     }
 
-    /// The engine process died (a crash, or the server stopping): the spec's error model says
-    /// the running job fails loudly and keep-awake is released while the supervisor restarts.
-    private func engineExited() {
+    /// An engine process died. A switch (intentional) has no jobs by construction; a crash
+    /// fails that engine's jobs loudly, and its supervisor restarts with backoff.
+    private func engineExited(_ engine: ModelEngine, intentional: Bool) {
+        guard !intentional else {
+            onChange?()
+            return
+        }
         lock.lock()
-        let running = jobs.values.filter { $0.status == "running" || $0.status == "queued" }
-        activeJobs = 0
-        keepAwake.isOn = false
+        let running = jobs.values.filter {
+            $0.engine == engine && ($0.status == "running" || $0.status == "queued")
+        }
         for job in running {
             jobs[job.id]?.status = "failed"
-            jobs[job.id]?.error = "The engine quit unexpectedly on the render Mac; it is restarting."
+            jobs[job.id]?.error = "The \(engine.rawValue) engine quit unexpectedly on the render Mac; it is restarting."
         }
+        activeJobs = max(0, activeJobs - running.count)
+        keepAwake.isOn = activeJobs > 0
         lock.unlock()
         for job in running {
             emit(jsonLine(["event": "failed", "id": job.id,
-                           "message": "The engine quit unexpectedly on the render Mac; it is restarting. Run the job again."]))
+                           "message": "The \(engine.rawValue) engine quit unexpectedly on the render Mac; it is restarting. Run the job again."]))
         }
         onChange?()
     }
 
-    public func start() { supervisor.start() }
-    public func stop() { supervisor.stop() }
+    public func start() { router.start() }
+    public func stop() { router.stop() }
 
     // MARK: - Status (menu bar, /hello)
 
-    public func helloFields() -> [String: Any] {
+    /// The ready event the wire sees: the active engine's own strings and memory, with the
+    /// union of every served family (the native engine's and the mflux worker's).
+    private func composedReady() -> [String: Any]? {
         lock.lock()
-        let ready = readyInfo
+        let active = router.activeEngine()
+        let infos = readyInfo
         lock.unlock()
+        guard active != nil || !infos.isEmpty else { return nil }
+
+        var ready = active.flatMap { infos[$0] } ?? [:]
+        ready["event"] = "ready"
+        ready["families"] = servedFamilies(infos)
+        if ready["engine"] == nil { ready["engine"] = "starting" }
+        if ready["memory"] == nil { ready["memory"] = Int(ProcessInfo.processInfo.physicalMemory) }
+        return ready
+    }
+
+    private func servedFamilies(_ infos: [ModelEngine: [String: Any]]) -> [String] {
+        var families = Set<String>()
+        for info in infos.values {
+            if let list = info["families"] as? [String] { families.formUnion(list) }
+        }
+        // The worker's ready is only seen once it has started; its families are known from
+        // the moment the venv exists, so the handshake does not change after the first job.
+        if router.isAvailable(.mflux) { families.formUnion(ModelFamily.mfluxFamilyNames) }
+        return families.sorted()
+    }
+
+    public func helloFields() -> [String: Any] {
         var hello: [String: Any] = [
             "protocol_version": 1,
             "app": "turbo-relay 0.1",
             "downloads": [String: String](), // M3
         ]
-        if let ready {
+        if let ready = composedReady() {
             for key in ["engine", "mlx", "device", "memory", "families"] where ready[key] != nil {
                 hello[key == "memory" ? "memory_bytes" : key] = ready[key]
             }
-            let families = (ready["families"] as? [String])?.joined(separator: "|") ?? ""
-            hello["catalog_version"] = String(Self.sha256Hex(families).prefix(16))
+            let families = (hello["families"] as? [String]) ?? []
+            hello["catalog_version"] = String(Self.sha256Hex(families.joined(separator: "|")).prefix(16))
         } else {
             hello["engine"] = "starting"
             hello["families"] = [String]()
@@ -111,18 +151,19 @@ public final class Bridge: @unchecked Sendable {
         return hello
     }
 
-    /// How many times the engine has restarted in its lifetime — the menu surfaces a
-    /// crash-loop instead of a forever-"running" engine (the bundled metallib bug did that).
+    /// How many times an engine has restarted in its lifetime — the menu surfaces a crash-loop
+    /// instead of a forever-"running" engine (the bundled metallib bug did that).
     public func restartCount() -> Int {
-        supervisor.restartAttempts()
+        max(router.restartAttempts(.turbo), router.restartAttempts(.mflux))
     }
 
     public func readyLine() -> String? {
-        lock.lock()
-        let ready = readyInfo
-        lock.unlock()
-        guard let ready else { return nil }
-        return jsonLine(ready)
+        composedReady().map(jsonLine)
+    }
+
+    /// "turbo" or "mflux": which engine holds the model (the menu's status line).
+    public func activeEngineName() -> String? {
+        router.activeEngine()?.rawValue
     }
 
     public func jobList() -> [[String: Any]] {
@@ -131,7 +172,8 @@ public final class Bridge: @unchecked Sendable {
         return jobs.values.sorted { $0.submittedAt < $1.submittedAt }.map { job in
             var entry: [String: Any] = [
                 "id": job.id, "status": job.status, "model": job.model,
-                "family": job.family, "submitted_at": ISO8601DateFormatter().string(from: job.submittedAt),
+                "family": job.family, "engine": job.engine.rawValue,
+                "submitted_at": ISO8601DateFormatter().string(from: job.submittedAt),
             ]
             if let fileID = job.fileID { entry["file_id"] = fileID }
             if let error = job.error { entry["error"] = error }
@@ -174,7 +216,22 @@ public final class Bridge: @unchecked Sendable {
         switch cmd {
         case "generate": translateGenerate(object)
         case "load": translateLoad(object)
-        case "cancel", "unload": supervisor.send(text)
+        case "cancel":
+            guard let id = object["id"] as? String else {
+                sendLog("cancel without id")
+                return
+            }
+            if router.cancel(jobID: id) {
+                // It waited for an engine switch and never reached one: the bridge reports
+                // the cancellation itself, as the engine would have.
+                finishJob(id, status: "cancelled", error: nil)
+                emit(jsonLine(["event": "cancelled", "id": id]))
+            } else if let engine = jobEngine(id) {
+                router.send(text, to: engine)
+            } else {
+                router.sendToActive(text)
+            }
+        case "unload": router.sendToActive(text)
         case "shutdown": sendLog("shutdown is reserved to the server")
         default: sendLog("unknown wire command: \(cmd)")
         }
@@ -218,6 +275,11 @@ public final class Bridge: @unchecked Sendable {
             return
         }
         let family = model["family"] as? String ?? ""
+        let engine = ModelFamily.engine(forFamily: family)
+        if engine == .mflux, !router.isAvailable(.mflux) {
+            fail(jobID: jobID, message: "\(family) needs the mflux engine, which is not installed on the render Mac. Install the relay's mflux environment first.")
+            return
+        }
         // The catalog pins a revision; the locator falls back to whatever snapshot is on disk
         // (a model downloaded by hand or by other tools still runs).
         let revision = ModelCatalog.builtIn.first { $0.id == name }?.revision
@@ -322,7 +384,7 @@ public final class Bridge: @unchecked Sendable {
 
         lock.lock()
         pathToName[resolved.path] = name
-        jobs[jobID] = Job(id: jobID, model: name, family: family, status: "running", submittedAt: Date(), fileID: nil, error: nil)
+        jobs[jobID] = Job(id: jobID, model: name, family: family, status: "running", submittedAt: Date(), fileID: nil, error: nil, engine: engine)
         jobUploads[jobID] = handleHashes
         for hash in handleHashes { uploadRefs[hash, default: 0] += 1 }
         activeJobs += 1
@@ -330,13 +392,19 @@ public final class Bridge: @unchecked Sendable {
         lock.unlock()
         onChange?()
 
-        supervisor.send(jsonLine(command))
+        router.send(jsonLine(command), to: engine, startsJob: true, jobID: jobID)
     }
 
     private func translateLoad(_ object: [String: Any]) {
         guard var model = deepCopy(object["model"]) as? [String: Any],
               let name = model["name"] as? String else {
             sendLog("load.model.name is required")
+            return
+        }
+        let family = model["family"] as? String ?? ""
+        let engine = ModelFamily.engine(forFamily: family)
+        if engine == .mflux, !router.isAvailable(.mflux) {
+            sendLog("\(family) needs the mflux engine, which is not installed on the render Mac")
             return
         }
         guard let resolved = locator.resolve(name, revision: ModelCatalog.builtIn.first { $0.id == name }?.revision) else {
@@ -349,26 +417,27 @@ public final class Bridge: @unchecked Sendable {
         lock.lock()
         pathToName[resolved.path] = name
         lock.unlock()
-        supervisor.send(jsonLine(command))
+        router.send(jsonLine(command), to: engine)
     }
 
     // MARK: - Engine events (engine → wire)
 
-    private func engineEvent(_ line: String) {
+    private func engineEvent(_ engine: ModelEngine, _ line: String) {
         guard let dict = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
               let event = dict["event"] as? String else {
-            engineLog(line)
+            engineLog(engine, line)
             return
         }
         var wire = dict
         switch event {
         case "ready":
-            readyInfo = dict
+            lock.lock()
+            readyInfo[engine] = dict
             serverMemoryBytes = dict["memory"] as? Int64 ?? 0
-            // A client that connected before the engine finished booting got no greeting
-            // (readyLine was still nil): it learns the engine is up only if the ready event
-            // is broadcast here, not merely cached.
-            broadcast?(jsonLine(dict))
+            lock.unlock()
+            // A client that connected before an engine finished booting got no greeting (or
+            // the previous engine's): broadcast the composed ready, not merely cache it.
+            wire = composedReady() ?? dict
             onChange?()
         case "model_loaded":
             if let path = wire["path"] as? String {
@@ -418,7 +487,11 @@ public final class Bridge: @unchecked Sendable {
         emit(jsonLine(wire))
     }
 
-    private func engineLog(_ line: String) {
+    private func engineLog(_ engine: ModelEngine, _ line: String) {
+        appendLog(line)
+    }
+
+    private func appendLog(_ line: String) {
         lock.lock()
         logLines.append(line)
         if logLines.count > 1000 { logLines.removeFirst(logLines.count - 1000) }
@@ -427,7 +500,7 @@ public final class Bridge: @unchecked Sendable {
     }
 
     private func sendLog(_ message: String) {
-        engineLog("[relay] " + message)
+        appendLog("[relay] " + message)
     }
 
     // MARK: - Staging
@@ -502,20 +575,34 @@ public final class Bridge: @unchecked Sendable {
     /// running.
     private func finishJob(_ id: String?, status: String, error: String?, fileID: String? = nil) {
         guard let id else { return }
+        var engine: ModelEngine?
+        var wasActive = false
         lock.lock()
-        if jobs[id] != nil {
-            jobs[id]!.status = status
-            jobs[id]!.error = error
-            if let fileID { jobs[id]!.fileID = fileID }
-            activeJobs = max(0, activeJobs - 1)
-            keepAwake.isOn = activeJobs > 0
+        if var job = jobs[id] {
+            wasActive = job.status == "running" || job.status == "queued"
+            job.status = status
+            job.error = error
+            if let fileID { job.fileID = fileID }
+            jobs[id] = job
+            engine = job.engine
+            if wasActive {
+                activeJobs = max(0, activeJobs - 1)
+                keepAwake.isOn = activeJobs > 0
+            }
             let hashes = jobUploads[id] ?? []
             jobUploads[id] = nil
             for hash in hashes { uploadRefs[hash, default: 1] -= 1 }
         }
         lock.unlock()
+        if wasActive, let engine { router.noteJobFinished(engine) }
         sweepUploads()
         onChange?()
+    }
+
+    private func jobEngine(_ id: String) -> ModelEngine? {
+        lock.lock()
+        defer { lock.unlock() }
+        return jobs[id]?.engine
     }
 
     /// Deletes content-addressed uploads nothing references anymore and that have been on

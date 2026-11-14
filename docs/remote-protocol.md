@@ -17,18 +17,26 @@ Turbo MLX client                    TurboRelay server
 ┌──────────────────┐   WIRE (this   ┌───────────────────────────┐
 │ RemoteBackend    │   document)    │ bridge                    │
 │  WorkerCommand ▲ │ ◀───────────▶ │  wire ⇄ engine translation│
-│  WorkerEvent   ▼ │   WS + HTTP    │  HubDownloader            │──▶ HF cache
+│  WorkerEvent   ▼ │   WS + HTTP    │  EngineRouter             │──▶ HF cache
 └──────────────────┘                │  job registry, staging    │
                                     └────────────┬──────────────┘
                                                  │ engine vocabulary
                                                  │ (stdin/stdout, unchanged)
                                                  ▼
-                                          turbo-engine serve
+                                  turbo-engine serve  |  mflux worker
 ```
 
 - **Engine layer** — the existing vocabulary, byte-for-byte what `turbo-engine`
   speaks. TurboRelay spawns and supervises the real engine (or, for testing,
   the stub engine in `../StubEngine/`).
+- **Two engines (A9).** The native `turbo-engine` serves the catalog. The
+  mflux worker (`../mflux-worker/`) serves the families mflux has that the
+  native engine does not: `krea-2` (Krea 2 Turbo) and `qwen-image-2.1`
+  (Qwen-Image 2.1 base and Turbo). `EngineRouter` sends a job by its
+  `model.family`; only one engine holds weights at a time, so a command for
+  the other family waits for the active engine's jobs to finish and then stops
+  that engine before the new one runs. The native engine starts with the
+  relay; the mflux worker starts on its first command.
 - **Wire layer** — the engine vocabulary with the amendments below, carried
   over WebSocket (JSON lines both ways) and HTTP (uploads, file fetch,
   handshake, catalog).
@@ -84,6 +92,12 @@ Failures: HTTP `401`; WS upgrade rejected with close code `4401`.
   unchanged, just fed the server's memory (signed-off refinement). The server
   re-checks at submit time with its own −2.5 GB allowance; the client-side
   gate is advisory.
+- `families` is the **union** of every family the relay can serve: the native
+  engine's `ready` list and the mflux worker's (`krea-2`, `qwen-image-2.1`)
+  once that worker is installed (A9).
+- `engine` is the **active** engine's own string (`turbo-engine 0.2`, `mflux
+  0.24.0`): the one that currently holds — or will next load — a model. It
+  changes as the router switches engines; so does the `ready` broadcast.
 - `catalog_version` lets the client detect drift between its `ModelCatalog`
   and the server's vendored copy (pitfall 11); on mismatch the client warns in
   Settings but may still work.
@@ -94,13 +108,17 @@ Failures: HTTP `401`; WS upgrade rejected with close code `4401`.
 two ways, and both must work:
 1. **On connect** — the server sends the cached `ready` as the first line of
    the session (the greeting). Covers clients connecting after boot.
-2. **On arrival** — when the engine boots while a client is already
+2. **On arrival** — when an engine boots while a client is already
    connected, the bridge **broadcasts** the ready event to the connected
    sessions; it may not merely cache it for future greetings. The real
    engine takes seconds to boot, so clients routinely connect first; a
    cached-only bridge leaves them on "Connecting…" forever (the stub's
    instant boot hid this until the real engine shipped — regression test:
    ClientE2E `late-ready`, stub `--delay-ready-ms`).
+
+   With two engines (A9), the broadcast is composed: the booting engine's
+   `engine`/`mlx`/device/memory strings with the union of families. A switch
+   therefore announces itself as a new `ready` when the next engine boots.
 
 ## Engine channel — `WS /engine`
 
@@ -199,7 +217,8 @@ last **20** finished jobs staged until claimed; older ones are dropped from
 
 Job ids are client-generated UUIDs (already the engine's convention). The
 server keeps a registry: `{id, status: queued|running|done|failed|cancelled,
-file_id?, error?, model, submitted_at}`.
+file_id?, error?, model, family, engine, submitted_at}`. `engine` is the
+engine the job ran on (A9), so history can show it.
 
 A client that reconnects (Wi-Fi blip, lid sleep) issues `GET /jobs`, matches
 its own queue by id, and fetches results for jobs that finished while it was
@@ -216,10 +235,15 @@ connection state.
   "models": [
     {"id": "z-image-turbo-mflux-q4", "family": "z-image-turbo",
      "name": "Z-Image Turbo", "min_ram_gb": 16, "download_gb": 5.9,
-     "state": "downloaded", "bytes_done": null, "bytes_total": null}
+     "engine": "turbo", "state": "downloaded",
+     "bytes_done": null, "bytes_total": null}
   ]
 }
 ```
+
+`engine` is `turbo` (native `turbo-engine`) or `mflux` (the fallback worker,
+A9). A job for an `mflux` model runs on the worker; the client can show the
+badge straight from this field.
 
 `state` ∈ `downloaded | downloading | failed | not-downloaded`. Progress for
 `downloading` arrives as WS events (distinct from engine events):
@@ -308,3 +332,4 @@ shape once a small model is cached on a real Mac.
 | A6 availability moves server-side | Model catalog; Error model |
 | A7 per-backend history tag | Client-side (M4), noted here for the estimate implication |
 | A8 injectable token, deliberate engine env | Model catalog and downloads |
+| A9 two engines, routed by family, one model at a time | Layering; Handshake; Engine channel; `/models`; job registry |

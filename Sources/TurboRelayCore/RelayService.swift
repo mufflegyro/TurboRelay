@@ -30,6 +30,29 @@ public final class RelayService: @unchecked Sendable {
         // the parent shell had.
         environment["HF_HOME"] = config.modelRootURL.deletingLastPathComponent().path
 
+        // Two engines, one pipe protocol. The native engine boots now; the mflux worker waits
+        // for its first job, and is simply absent when its venv is not installed.
+        let router = EngineRouter { engine in
+            switch engine {
+            case .turbo:
+                return EngineSupervisor(name: "turbo-engine", executablePath: enginePath,
+                                        arguments: ["serve"] + config.engineArgs,
+                                        environment: environment)
+            case .mflux:
+                guard let python = self.resolvedMFluxPython(), let worker = self.resolvedMFluxWorker() else {
+                    return nil
+                }
+                var mfluxEnvironment = environment
+                // A signed bundle is read-only: never write .pyc beside worker.py, and keep
+                // the log lines flowing without Python's buffering.
+                mfluxEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
+                mfluxEnvironment["PYTHONUNBUFFERED"] = "1"
+                return EngineSupervisor(name: "mflux", executablePath: python,
+                                        arguments: [worker, "serve"],
+                                        environment: mfluxEnvironment)
+            }
+        }
+
         let downloads = DownloadManager(
             hubCache: config.modelRootURL,
             baseURL: config.hubBaseURL.isEmpty ? URL(string: "https://huggingface.co")! : (URL(string: config.hubBaseURL) ?? URL(fileURLWithPath: config.hubBaseURL)),
@@ -49,8 +72,7 @@ public final class RelayService: @unchecked Sendable {
         downloads.onChange = { [weak self] in self?.onChange?() }
         self.downloads = downloads
 
-        let bridge = Bridge(home: home, modelRoot: config.modelRootURL, enginePath: enginePath,
-                            environment: environment, engineArguments: config.engineArgs)
+        let bridge = Bridge(home: home, modelRoot: config.modelRootURL, router: router)
         let server = HTTPWebSocketServer(port: UInt16(config.port), token: config.token)
         bridge.broadcast = { [weak server] line in server?.broadcast(line) }
         bridge.onChange = { [weak self] in self?.onChange?() }
@@ -97,6 +119,9 @@ public final class RelayService: @unchecked Sendable {
         if restarts > 0 {
             state += " · restarting (attempt \(restarts)) — see the engine log"
         }
+        if let active = bridge.activeEngineName() {
+            state += " · \(active) engine"
+        }
         return "Port \(port) · \(state) · \(clients) client(s)\(loaded.map { " · \($0)" } ?? "")"
     }
 
@@ -116,6 +141,27 @@ public final class RelayService: @unchecked Sendable {
             }
         }
         return config.enginePath
+    }
+
+    /// The mflux venv's Python: configured, else the relay's lazily installed venv.
+    private func resolvedMFluxPython() -> String? {
+        let path = config.mfluxPython.isEmpty
+            ? home.appendingPathComponent("mflux-venv/bin/python").path
+            : (config.mfluxPython as NSString).expandingTildeInPath
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    /// The worker script: configured, else the one build.sh puts in the bundle's Resources.
+    private func resolvedMFluxWorker() -> String? {
+        let path: String
+        if !config.mfluxWorker.isEmpty {
+            path = (config.mfluxWorker as NSString).expandingTildeInPath
+        } else if let bundled = Bundle.main.url(forResource: "worker", withExtension: "py") {
+            path = bundled.path
+        } else {
+            return nil
+        }
+        return FileManager.default.fileExists(atPath: path) ? path : nil
     }
 
     // MARK: - HTTP routing

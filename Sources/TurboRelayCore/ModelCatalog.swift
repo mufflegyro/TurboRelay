@@ -221,6 +221,25 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
     }
 }
 
+/// Which engine serves a family: the native `turbo-engine`, or the mflux fallback worker.
+public enum ModelEngine: String, Codable, Sendable, CaseIterable {
+    case turbo
+    case mflux
+}
+
+extension ModelFamily {
+    /// The families the relay's mflux worker serves (its `SERVED_FAMILIES`). The catalog gains
+    /// the two cases in plan Part 3; routing needs their names before that, so they live here.
+    /// They must match `TurboRelay/mflux-worker/worker.py` exactly.
+    static let mfluxFamilyNames: Set<String> = ["krea-2", "qwen-image-2.1"]
+
+    static func engine(forFamily family: String) -> ModelEngine {
+        mfluxFamilyNames.contains(family) ? .mflux : .turbo
+    }
+
+    var engine: ModelEngine { ModelFamily.engine(forFamily: rawValue) }
+}
+
 nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
     nonisolated enum Source: Hashable, Codable, Sendable {
         case huggingFace(repo: String)

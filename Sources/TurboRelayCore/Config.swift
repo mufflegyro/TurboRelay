@@ -37,6 +37,10 @@ public struct RelayConfig {
     public var hubBaseURL: String
     /// Extra arguments after `serve` (e.g. the stub's `--delay-ready-ms` in tests).
     public var engineArgs: [String]
+    /// Python for the mflux fallback worker; empty = `<relay home>/mflux-venv/bin/python`.
+    public var mfluxPython: String = ""
+    /// The mflux worker script; empty = the app bundle's `worker.py` (build.sh copies it).
+    public var mfluxWorker: String = ""
 
     public static func load(home: URL) -> RelayConfig {
         let file = home.appendingPathComponent("config.json")
@@ -48,7 +52,9 @@ public struct RelayConfig {
             modelRoot: object["model_root"] as? String ?? "",
             hfToken: object["hf_token"] as? String ?? "",
             hubBaseURL: object["hub_base_url"] as? String ?? "",
-            engineArgs: object["engine_args"] as? [String] ?? []
+            engineArgs: object["engine_args"] as? [String] ?? [],
+            mfluxPython: object["mflux_python"] as? String ?? "",
+            mfluxWorker: object["mflux_worker"] as? String ?? ""
         )
         if config.token.isEmpty {
             var bytes = [UInt8](repeating: 0, count: 32)
@@ -60,6 +66,7 @@ public struct RelayConfig {
             "engine_path": config.enginePath, "model_root": config.modelRoot,
             "hf_token": config.hfToken, "hub_base_url": config.hubBaseURL,
             "engine_args": config.engineArgs,
+            "mflux_python": config.mfluxPython, "mflux_worker": config.mfluxWorker,
         ], options: [.prettyPrinted, .withoutEscapingSlashes]) {
             try? data.write(to: file, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
