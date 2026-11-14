@@ -1,0 +1,15 @@
+{"event": "phase", "phase": "loading", "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "model_loaded", "path": "/server/hf/hub/models--mflux-community--krea-2-turbo-mflux-q4/snapshots/6f1c0f2", "seconds": null}
+{"event": "phase", "phase": "encoding", "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "phase", "phase": "denoising", "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 1, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 2, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 3, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 4, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 5, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 6, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 7, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "progress", "step": 8, "total": 8, "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "phase", "phase": "decoding", "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "phase", "phase": "saving", "id": "11111111-1111-4111-8111-111111111111"}
+{"event": "done", "id": "11111111-1111-4111-8111-111111111111", "seed": 42, "width": 64, "height": 64, "path": null, "seconds": null, "peak_memory": null, "timings": null}

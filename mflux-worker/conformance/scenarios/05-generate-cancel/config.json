@@ -1,0 +1,2 @@
+{"args": ["serve"], "second_file": "cancel.jsonl", "second_delay_ms": 150,
+ "env": {"FAKE_STEP_DELAY_MS": "40"}}

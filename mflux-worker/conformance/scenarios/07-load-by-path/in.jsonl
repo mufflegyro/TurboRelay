@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "66666666-6666-4666-8666-666666666666", "model": {"family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "variant": "", "low_ram": false}, "params": {"prompt": "loaded by alias, which the relay must never do", "seed": 2, "width": 64, "height": 64, "steps": 8, "guidance": 1, "output": "__OUTPUT__"}}
+{"cmd": "shutdown"}

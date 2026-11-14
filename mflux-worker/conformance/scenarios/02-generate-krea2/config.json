@@ -1,0 +1,2 @@
+{"args": ["serve"], "verify_png": "result.png",
+ "expect_stderr": ["prompt cache entries=0", "prompt cache cleared after job"]}

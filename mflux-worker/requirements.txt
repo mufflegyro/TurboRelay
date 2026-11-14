@@ -1,0 +1,15 @@
+# The relay's fallback engine: mflux behind turbo-engine's protocol (worker.py).
+#
+# Python 3.13 (`.python-version`; mlx 0.32.2 has cp313 wheels, and mflux's pillow 13 does not
+# support newer Pythons):
+#   uv venv --python 3.13 <TurboRelay home>/mflux-venv
+#   uv pip install --python <TurboRelay home>/mflux-venv/bin/python -r requirements.txt
+#
+# mflux is pinned exactly: its model APIs (mflux.models.krea2, mflux.models.qwen21, saved-pack
+# loading) are internal, and worker.py refuses any other version with a readable `fatal` event
+# instead of loading a model with a shape it was not written for.
+mflux==0.24.0
+
+# The MLX the native engine also resolves (turbo-mlx/Engine/Package.resolved): keeping the two
+# engines on one MLX keeps a seed's arithmetic as close as the two implementations allow.
+mlx==0.32.2

@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "55555555-5555-4555-8555-555555555555", "model": {"family": "no-such-family", "name": "someone/unknown", "path": "/server/models/unknown", "variant": "", "low_ram": false}, "params": {"prompt": "anything", "seed": 1, "width": 64, "height": 64, "steps": 4, "guidance": 1, "output": "__OUTPUT__"}}
+{"cmd": "shutdown"}

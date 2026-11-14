@@ -1,0 +1,1 @@
+{"event": "fatal", "reason": "mflux-version", "message": "~mflux 0.23.0 is installed, but this worker is written for 0.24.0"}

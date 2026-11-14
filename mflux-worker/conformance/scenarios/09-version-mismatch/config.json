@@ -1,0 +1,1 @@
+{"args": ["serve"], "env": {"FAKE_MFLUX_VERSION": "0.23.0"}, "expect_exit": 2}

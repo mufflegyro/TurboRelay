@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "44444444-4444-4444-8444-444444444444", "model": {"family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "path": "/server/hf/hub/models--mflux-community--krea-2-turbo-mflux-q4/snapshots/6f1c0f2", "variant": "", "low_ram": false}, "params": {"prompt": "a slow render to be cancelled", "seed": 9, "width": 64, "height": 64, "steps": 12, "guidance": 1, "output": "__OUTPUT__"}}
+{"cmd": "shutdown"}

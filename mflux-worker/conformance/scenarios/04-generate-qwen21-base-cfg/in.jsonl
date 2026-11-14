@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "33333333-3333-4333-8333-333333333333", "model": {"family": "qwen-image-2.1", "name": "mflux-community/Qwen-Image-2.1-mflux-q4", "path": "/server/hf/hub/models--mflux-community--Qwen-Image-2.1-mflux-q4/snapshots/be7d1a0", "variant": "", "low_ram": false}, "params": {"prompt": "a lighthouse in a storm", "seed": 3, "width": 64, "height": 64, "steps": 4, "guidance": 4, "negative_prompt": "blurry, low quality", "output": "__OUTPUT__", "preview": true}}
+{"cmd": "shutdown"}

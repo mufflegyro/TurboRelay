@@ -1,0 +1,3 @@
+{"args": ["serve"],
+ "expect_stderr": ["prompt cache entries=0", "prompt cache cleared after job"],
+ "forbid_stderr": ["loads=2"]}

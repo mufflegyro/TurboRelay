@@ -18,6 +18,7 @@ SwiftUI ── RemoteBackend ── WS+HTTP ── bridge ⇄ turbo-engine serve
 | `Sources/TurboRelayCore/` | Config, HTTP+WS listener, engine supervisor, wire⇄engine bridge, model locator |
 | `Sources/RelayServer/` | Headless server (same core; used by the e2e tests) |
 | `Sources/TurboRelayApp/` | The menu bar app (MenuBarExtra) |
+| `mflux-worker/` | The fallback engine: mflux behind turbo-engine's protocol, for Krea 2 and Qwen-Image 2.1 |
 | `StubEngine/` | The M1 conformance kit: stub engine + RelayLint wire linter + scenarios |
 | `tests/e2e.py` | Loopback end-to-end of the real server (auth, handshake, uploads, generation, previews, results, resume registry, path-hostility defense) |
 
@@ -28,6 +29,7 @@ SwiftUI ── RemoteBackend ── WS+HTTP ── bridge ⇄ turbo-engine serve
 swift run RelayServer      # headless, prints the port and pairing token
 python3 tests/e2e.py       # loopback end-to-end (needs a release build)
 (cd StubEngine && ./run-conformance.sh)   # protocol conformance
+(cd mflux-worker && ./run-conformance.sh) # the mflux worker's protocol + adapters (fake mflux)
 ```
 
 The bundle embeds the real `turbo-engine` when `../turbo-mlx/.build/release/turbo-engine`
@@ -49,7 +51,7 @@ The menu bar shows the port, engine state, connected clients and the model in me
 and can copy the pairing token — the client pastes it into Turbo MLX's remote-backend
 settings.
 
-## Status (2026-11-12)
+## Status (2026-11-14)
 
 - **M0 protocol spec** — done
 - **M1 conformance kit** — done, all scenarios green
@@ -62,6 +64,10 @@ settings.
 - **M6 real-model render + two-Mac checklist** — checklist done
   (`docs/two-mac-checklist.md`); the real-model render runs on your Macs, per the
   loopback-only rule
+- **mflux fallback (plan Part 1)** — the worker is in `mflux-worker/`: Krea 2 and
+  Qwen-Image 2.1 (base/Turbo) behind the engine protocol, pinned mflux 0.24.0, prompt cache
+  cleared between jobs, suite green against fake mflux/MLX. Relay routing (Part 2), the
+  catalog entries and the lazy venv are not wired yet.
 
 Failure paths are covered too: engine crash mid-job fails the running job and restarts the
 engine (M2 e2e), and a disconnect mid-job reconnects on its own and delivers the finished

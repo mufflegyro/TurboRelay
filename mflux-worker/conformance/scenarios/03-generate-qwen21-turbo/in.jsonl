@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "22222222-2222-4222-8222-222222222222", "model": {"family": "qwen-image-2.1", "name": "zimageapp/qwen-image-2.1-turbo-q4", "path": "/server/hf/hub/models--zimageapp--qwen-image-2.1-turbo-q4/snapshots/c41e9b8", "variant": "qwen-image-2.1-turbo", "low_ram": false}, "params": {"prompt": "a tiger in a forest", "seed": 7, "width": 64, "height": 64, "steps": 8, "guidance": 1, "negative_prompt": "blurry", "output": "__OUTPUT__", "preview": true}}
+{"cmd": "shutdown"}

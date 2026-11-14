@@ -1,0 +1,2 @@
+{"cmd": "generate", "id": "99999999-9999-4999-8999-999999999999", "model": {"family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "path": "/server/hf/hub/models--mflux-community--krea-2-turbo-mflux-q4/snapshots/6f1c0f2", "variant": "", "low_ram": false}, "params": {"prompt": "a neon-lit portrait", "seed": 5, "width": 64, "height": 64, "steps": 4, "guidance": 1, "output": "__OUTPUT__", "loras": [{"path": "/server/TurboRelay/staging/loras/9c1f00d-style.safetensors", "scale": 0.75}]}}
+{"cmd": "shutdown"}

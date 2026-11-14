@@ -1,0 +1,8 @@
+{"event": "phase", "phase": "loading", "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "model_loaded", "path": "/server/hf/hub/models--zimageapp--qwen-image-2.1-turbo-q4/snapshots/c41e9b8", "seconds": null}
+{"event": "phase", "phase": "encoding", "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "phase", "phase": "denoising", "total": 8, "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "progress", "step": 1, "total": 8, "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "progress", "step": 8, "total": 8, "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "phase", "phase": "decoding", "id": "22222222-2222-4222-8222-222222222222"}
+{"event": "done", "id": "22222222-2222-4222-8222-222222222222", "seed": 7, "width": 64, "height": 64}
