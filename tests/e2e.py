@@ -185,11 +185,13 @@ def main() -> None:
     fake_model = model_root / "models--mflux-community--z-image-turbo-mflux-q4" / "snapshots" / "cafe1234"
     fake_model.mkdir(parents=True)
     (fake_model / "model.safetensors").write_bytes(b"stub checkpoint bytes")
-    # The mflux routing checks generate Krea 2: the locator needs a snapshot on disk, and the
-    # worker's fake mflux reads no weights.
-    krea_model = model_root / "models--mflux-community--krea-2-turbo-mflux-q4" / "snapshots" / "beef0001"
-    krea_model.mkdir(parents=True)
-    (krea_model / "model.safetensors").write_bytes(b"fake krea pack")
+    # The mflux routing checks generate Qwen-Image 2.1: the locator needs a snapshot on disk,
+    # and the worker's fake mflux reads no weights. Its Q4 pack's memory estimate fits this
+    # 16 GB test Mac; Krea 2's (15.8 GB of weights) would be refused by the relay's backstop,
+    # which is the right answer for a real Krea job here.
+    qwen_model = model_root / "models--mflux-community--qwen-image-2-1-mflux-q4" / "snapshots" / "beef0001"
+    qwen_model.mkdir(parents=True)
+    (qwen_model / "model.safetensors").write_bytes(b"fake qwen pack")
 
     (staging_home / "config.json").write_text(json.dumps({
         "port": port, "token": token, "engine_path": str(STUB), "model_root": str(model_root),
@@ -229,7 +231,7 @@ def main() -> None:
         check("hello speaks protocol 1", hello.get("protocol_version") == 1)
         check("hello reports memory in bytes", isinstance(hello.get("memory_bytes"), int) and hello["memory_bytes"] > 0)
         check("hello carries the stub engine's families", "z-image-turbo" in hello.get("families", []))
-        check("hello advertises the mflux worker's families", "krea-2" in hello.get("families", []), str(hello.get("families")))
+        check("hello advertises the mflux worker's families", "qwen-image-2.1" in hello.get("families", []), str(hello.get("families")))
 
         # Uploads: probe then PUT, content-addressed.
         upload_bytes = bytes((i * 37 + 11) % 256 for i in range(512))
@@ -245,10 +247,18 @@ def main() -> None:
 
         # M3 endpoints: the catalog is live.
         status, body = http("GET", port, "/models")
-        catalog = json.loads(body)["models"] if status == 200 else []
-        check("GET /models lists the server catalog", status == 200 and len(catalog) >= 14, str(status))
+        models_payload = json.loads(body) if status == 200 else {}
+        catalog = models_payload.get("models", [])
+        check("GET /models lists the server catalog", status == 200 and len(catalog) >= 17, str(status))
         check("every /models entry names its engine (turbo or mflux)",
               catalog and all(entry.get("engine") in ("turbo", "mflux") for entry in catalog))
+        mflux_entries = [entry for entry in catalog if entry.get("engine") == "mflux"]
+        check("the catalog carries the three mflux models",
+              {entry["family"] for entry in mflux_entries} == {"krea-2", "qwen-image-2.1"} and len(mflux_entries) == 3,
+              str([(entry["id"], entry.get("engine")) for entry in mflux_entries]))
+        check("/hello and /models share one catalog_version",
+              hello.get("catalog_version") == models_payload.get("catalog_version"),
+              f"{hello.get('catalog_version')} vs {models_payload.get('catalog_version')}")
 
         # A second upload for a LoRA handle.
         lora_bytes = b"lora-weights-bytes" * 8
@@ -322,13 +332,14 @@ def main() -> None:
         # worker; the next native family switches back, restarting the stub it stopped.
         mflux_job = "e2e5555-5555-4555-8555-555555555555"
         ws.send_text(json.dumps({"cmd": "generate", "id": mflux_job, "model": {
-            "family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "variant": "", "low_ram": False
+            "family": "qwen-image-2.1", "name": "mflux-community/qwen-image-2-1-mflux-q4", "variant": "", "low_ram": True
         }, "params": {"prompt": "a red fox in a sunlit clearing", "seed": 42, "width": 64, "height": 64,
                       "steps": 4, "guidance": 1}}))
         mflux_done = None
+        mflux_failure = None
         mflux_events: list[dict] = []
         deadline = time.time() + 30
-        while mflux_done is None and time.time() < deadline:
+        while mflux_done is None and mflux_failure is None and time.time() < deadline:
             message = ws.recv_message()
             if message is None:
                 break
@@ -337,7 +348,9 @@ def main() -> None:
             mflux_events.append(event)
             if event.get("event") == "done" and event.get("id") == mflux_job:
                 mflux_done = event
-        check("an mflux family reaches the Python worker", mflux_done is not None)
+            elif event.get("event") == "failed" and event.get("id") == mflux_job:
+                mflux_failure = event
+        check("an mflux family reaches the Python worker", mflux_done is not None, str(mflux_failure))
         ready_events = [e for e in mflux_events if e.get("event") == "ready"]
         check("the mflux engine announces its own name",
               bool(ready_events) and str(ready_events[-1].get("engine", "")).startswith("mflux"),
@@ -357,8 +370,9 @@ def main() -> None:
         }, "params": {"prompt": "back to the stub engine", "seed": 3, "width": 64, "height": 64,
                       "steps": 2, "guidance": 1}}))
         native_done = None
+        native_failure = None
         deadline = time.time() + 30
-        while native_done is None and time.time() < deadline:
+        while native_done is None and native_failure is None and time.time() < deadline:
             message = ws.recv_message()
             if message is None:
                 break
@@ -366,13 +380,15 @@ def main() -> None:
             event = json.loads(message)
             if event.get("event") == "done" and event.get("id") == native_again:
                 native_done = event
-        check("a native family switches back to turbo-engine", native_done is not None)
+            elif event.get("event") == "failed" and event.get("id") == native_again:
+                native_failure = event
+        check("a native family switches back to turbo-engine", native_done is not None, str(native_failure))
         status, body = http("GET", port, "/jobs")
         entry = next((j for j in json.loads(body)["jobs"] if j["id"] == native_again), None)
         check("the native job is recorded as turbo", entry is not None and entry.get("engine") == "turbo", str(entry))
         status, body = http("GET", port, "/hello")
         families = json.loads(body).get("families", [])
-        check("hello carries both engines' families", "z-image-turbo" in families and "krea-2" in families, str(families))
+        check("hello carries both engines' families", "z-image-turbo" in families and "qwen-image-2.1" in families, str(families))
 
         # One model at a time (A9): an mflux job submitted while a native job runs waits for
         # it and then switches — the running native job is not killed.
@@ -383,7 +399,7 @@ def main() -> None:
         }, "params": {"prompt": "a slow native job", "seed": 8, "width": 64, "height": 64,
                       "steps": 12, "guidance": 1}}))
         ws.send_text(json.dumps({"cmd": "generate", "id": queued_job, "model": {
-            "family": "krea-2", "name": "mflux-community/krea-2-turbo-mflux-q4", "variant": "", "low_ram": False
+            "family": "qwen-image-2.1", "name": "mflux-community/qwen-image-2-1-mflux-q4", "variant": "", "low_ram": True
         }, "params": {"prompt": "queued behind the native job", "seed": 9, "width": 64, "height": 64,
                       "steps": 4, "guidance": 1}}))
         finished: dict[str, dict] = {}

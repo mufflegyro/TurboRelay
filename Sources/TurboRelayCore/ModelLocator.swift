@@ -31,10 +31,10 @@ public struct ModelLocator {
     }
 
     /// Whether the model's whole snapshot is on disk and complete (mirrors turbo-mlx's
-    /// `ModelLocator.isComplete`: the catalog's required files, the tokenizer, and a
-    /// safetensors in every component). A partial or interrupted download must not count —
-    /// the client's picker reads this to show "downloaded", and a seeding here has no other
-    /// completeness signal.
+    /// `ModelLocator.isComplete`: the catalog's required files, the tokenizer, every shard an
+    /// index names, and a safetensors in every component). A partial or interrupted download
+    /// must not count — the client's picker reads this to show "downloaded", and a seeding
+    /// here has no other completeness signal.
     func complete(of id: String, family: ModelFamily, revision: String? = nil) -> Bool {
         guard let snapshot = resolve(id, revision: revision) else { return false }
         let fm = FileManager.default
@@ -43,11 +43,39 @@ public struct ModelLocator {
            !fm.fileExists(atPath: snapshot.appending(path: tokenizer).path) {
             return false
         }
+        guard Self.topLevelShardsPresent(in: snapshot) else { return false }
         return family.components.allSatisfy { component in
             let directory = snapshot.appending(path: component)
             guard let files = try? fm.contentsOfDirectory(atPath: directory.path) else { return false }
-            return files.contains { $0.hasSuffix(".safetensors") && fm.fileExists(atPath: directory.appending(path: $0).path) }
+            let indexes = files.filter { $0.hasSuffix(".safetensors.index.json") }
+            if indexes.isEmpty {
+                return files.contains { $0.hasSuffix(".safetensors") && fm.fileExists(atPath: directory.appending(path: $0).path) }
+            }
+            return indexes.allSatisfy { index in
+                guard let data = try? Data(contentsOf: directory.appending(path: index)),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let weightMap = json["weight_map"] as? [String: String], !weightMap.isEmpty
+                else { return false }
+                return Set(weightMap.values).allSatisfy { fm.fileExists(atPath: directory.appending(path: $0).path) }
+            }
         }
+    }
+
+    /// Every shard a top-level `.safetensors.index.json` names must be on disk too (Krea 2 keeps
+    /// its transformer's shards at the checkpoint's root; SenseNova's whole pack is there).
+    private static func topLevelShardsPresent(in folder: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return false }
+        for index in files where index.hasSuffix(".safetensors.index.json") {
+            guard let data = try? Data(contentsOf: folder.appending(path: index)),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let weightMap = json["weight_map"] as? [String: String], !weightMap.isEmpty
+            else { return false }
+            guard Set(weightMap.values).allSatisfy({ fileManager.fileExists(atPath: folder.appending(path: $0).path) }) else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func hasFiles(_ names: [String], in folder: URL) -> Bool {

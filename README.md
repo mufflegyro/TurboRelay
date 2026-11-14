@@ -69,12 +69,14 @@ settings.
 - **M6 real-model render + two-Mac checklist** — checklist done
   (`docs/two-mac-checklist.md`); the real-model render runs on your Macs, per the
   loopback-only rule
-- **mflux fallback (plan Parts 1–2)** — the worker is in `mflux-worker/`: Krea 2 and
+- **mflux fallback (plan Parts 1–3)** — the worker is in `mflux-worker/`: Krea 2 and
   Qwen-Image 2.1 (base/Turbo) behind the engine protocol, pinned mflux 0.24.0, prompt cache
   cleared between jobs, suite green against fake mflux/MLX. The relay routes those families
   to it (`EngineRouter`), keeps one model resident by stopping the other engine on a switch,
-  reports `engine` on `/models` and each job, and composes `ready`/`/hello` from both engines.
-  The catalog entries, client badge and lazy venv are Parts 3–4.
+  and reports `engine` on `/models`, `/jobs` and `done`. The catalog carries the three
+  verified mflux models (Krea 2 q4, Qwen-Image 2.1 q4 base and Turbo), with estimates for
+  their memory until the real renders; the client shows the native/mflux badge and offers
+  the families only in remote mode. The lazy venv and the real smoke are Part 4.
 
 Failure paths are covered too: engine crash mid-job fails the running job and restarts the
 engine (M2 e2e), and a disconnect mid-job reconnects on its own and delivers the finished

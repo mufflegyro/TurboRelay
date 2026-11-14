@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 /// Translates between the wire protocol (network, TurboRelay/docs/remote-protocol.md) and
 /// the engine protocol (turbo-engine's stdin/stdout JSON lines), over one or two engines:
@@ -135,18 +134,18 @@ public final class Bridge: @unchecked Sendable {
             "protocol_version": 1,
             "app": "turbo-relay 0.1",
             "downloads": [String: String](), // M3
+            // The catalog is the same before and after an engine is ready: the client can
+            // compare it from the first handshake (spec §Handshake).
+            "catalog_version": ModelCatalog.version,
         ]
         if let ready = composedReady() {
             for key in ["engine", "mlx", "device", "memory", "families"] where ready[key] != nil {
                 hello[key == "memory" ? "memory_bytes" : key] = ready[key]
             }
-            let families = (hello["families"] as? [String]) ?? []
-            hello["catalog_version"] = String(Self.sha256Hex(families.joined(separator: "|")).prefix(16))
         } else {
             hello["engine"] = "starting"
             hello["families"] = [String]()
             hello["memory_bytes"] = Int(ProcessInfo.processInfo.physicalMemory)
-            hello["catalog_version"] = "unavailable"
         }
         return hello
     }
@@ -372,7 +371,10 @@ public final class Bridge: @unchecked Sendable {
                                           size: PixelSize(width: (params["width"] as? Int) ?? 512,
                                                           height: (params["height"] as? Int) ?? 512),
                                           frames: params["frames"] as? Int,
-                                          lowMemory: (params["low_ram"] as? Bool) ?? false,
+                                          // Save memory rides on the model object (the client's
+                                          // `modelObject`), not on params; params keeps the old
+                                          // spelling for older clients.
+                                          lowMemory: (model["low_ram"] as? Bool) ?? (params["low_ram"] as? Bool) ?? false,
                                           memory: serverGigabytes) {
             let needed = peak + loraGigabytes
             let free = MemoryEstimate.available(memory: serverGigabytes)
@@ -462,8 +464,12 @@ public final class Bridge: @unchecked Sendable {
         case "done":
             let jobID = dict["id"] as? String ?? ""
             lock.lock()
-            let family = jobs[jobID]?.family ?? ""
+            let job = jobs[jobID]
             lock.unlock()
+            let family = job?.family ?? ""
+            // The engine that ran the job travels with the result, for the client's history
+            // badge (the relay's own jobs registry carries it too).
+            if let job { wire["engine"] = job.engine.rawValue }
             if let path = wire["path"] as? String {
                 wire.removeValue(forKey: "path")
                 let mediaType = Self.mediaType(forFamily: family)
@@ -657,10 +663,6 @@ public final class Bridge: @unchecked Sendable {
     private func jsonLine(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes]) else { return "{}" }
         return String(decoding: data, as: UTF8.self)
-    }
-
-    static func sha256Hex(_ string: String) -> String {
-        SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     static func mediaType(forFamily family: String) -> String {

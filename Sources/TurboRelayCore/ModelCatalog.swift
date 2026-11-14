@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// A family of models: one `FamilyModel` in the engine (`Engine/Sources/TurboEngineCore/Families/`).
 nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable {
@@ -16,6 +17,8 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
     case idol
     case minimaxMusic3 = "minimax-music3"
     case mossSoundEffect = "moss-soundeffect"
+    case krea2 = "krea-2"
+    case qwenImage21 = "qwen-image-2.1"
 
     var displayName: String {
         switch self {
@@ -34,6 +37,8 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
         // The licence asks for this name, as written, wherever a product shows the model.
         case .minimaxMusic3: "MiniMax-Music3"
         case .mossSoundEffect: "MOSS-SoundEffect"
+        case .krea2: "Krea 2 Turbo"
+        case .qwenImage21: "Qwen-Image 2.1"
         }
     }
 
@@ -81,7 +86,8 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
     /// ltx-2-mlx does (the engine's `LoRAAdaptable`).
     var takesLoRAs: Bool {
         switch self {
-        case .zImageTurbo, .flux2Klein, .flux3Klein, .mossImage, .qwenImage, .qwenImageEdit, .ltx2, .ltx25: true
+        case .zImageTurbo, .flux2Klein, .flux3Klein, .mossImage, .qwenImage, .qwenImageEdit, .ltx2, .ltx25,
+             .krea2, .qwenImage21: true
         case .ming, .senseNova, .seedVR2, .idol, .minimaxMusic3, .mossSoundEffect: false
         }
     }
@@ -91,7 +97,11 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
     var qualityFiles: [String] { isLTX ? ["transformer-dev.safetensors"] : [] }
 
     /// The families that can show the image as it forms: image models, with steps to show it at.
-    var showsPreview: Bool { media == .image && !isUpscaler }
+    /// The mflux families report progress but no preview frames yet (its callbacks carry no
+    /// intermediate image), so the client does not ask for one.
+    var showsPreview: Bool {
+        media == .image && !isUpscaler && self != .krea2 && self != .qwenImage21
+    }
 
     /// Checkpoint sub-folders that must hold complete safetensors shards (SenseNova's MLX packs keep
     /// theirs, and the index naming them, at the top).
@@ -102,6 +112,9 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
         case .senseNova, .minimaxMusic3: ["."]
         // The MLX pack: Qwen3's shards as OpenMOSS ships them, the DiT and the VAE converted in `mlx/`.
         case .mossSoundEffect: ["text_encoder"]
+        // Krea 2's mflux save keeps the transformer's shards at the top, beside these two.
+        case .krea2: ["text_encoder", "vae"]
+        case .qwenImage21: ["transformer", "text_encoder", "vae"]
         case .ltx2, .ltx25, .seedVR2, .idol: []
         }
     }
@@ -123,6 +136,9 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
         case .idol: Self.idolFiles
         case .minimaxMusic3: ["config.json", "model.safetensors.index.json"]
         case .mossSoundEffect: ["model_index.json", "transformer/config.json", "mlx/dit.safetensors", "mlx/vae.safetensors"]
+        // The transformer's shard index at the top; the components' own files are checked by folder.
+        case .krea2: ["model.safetensors.index.json"]
+        case .qwenImage21: ["model_index.json"]
         default: []
         }
     }
@@ -139,6 +155,9 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
         case .seedVR2: nil // no prompt: the engine has the fixed text embedding
         case .idol: nil // no prompt
         case .minimaxMusic3, .mossSoundEffect: "tokenizer/tokenizer.json"
+        case .krea2: "tokenizer/tokenizer.json"
+        // Qwen3-VL's processor, as mflux saves it for 2.1.
+        case .qwenImage21: "processor/tokenizer.json"
         }
     }
 
@@ -192,6 +211,15 @@ nonisolated enum ModelFamily: String, Codable, Hashable, Sendable, CaseIterable 
         case .mossSoundEffect:
             return weights + ["README.md", "model_index.json", "mlx/*.safetensors", "transformer/config.json", "vae/config.json",
                               "scheduler/*.json", "tokenizer/*"]
+        // Krea 2's mflux save: the transformer's shards and their index at the top, then the
+        // text encoder, its tokenizer and the VAE in folders.
+        case .krea2:
+            return ["README.md", "*.safetensors", "*.json", "text_encoder/*", "tokenizer/*", "vae/*"]
+        // Qwen-Image 2.1's mflux save (base and Turbo): the three components, the processor's
+        // tokenizer and the scheduler's settings, plus the pack's own index.
+        case .qwenImage21:
+            return weights + ["processor/*", "scheduler/*.json", "model_index.json", "manifest.json",
+                              "osaurus.json", "README.md", "LICENSE", "NOTICE"]
         }
     }
 
@@ -228,16 +256,22 @@ public enum ModelEngine: String, Codable, Sendable, CaseIterable {
 }
 
 extension ModelFamily {
-    /// The families the relay's mflux worker serves (its `SERVED_FAMILIES`). The catalog gains
-    /// the two cases in plan Part 3; routing needs their names before that, so they live here.
-    /// They must match `TurboRelay/mflux-worker/worker.py` exactly.
-    static let mfluxFamilyNames: Set<String> = ["krea-2", "qwen-image-2.1"]
-
-    static func engine(forFamily family: String) -> ModelEngine {
-        mfluxFamilyNames.contains(family) ? .mflux : .turbo
+    /// The families the relay's mflux worker serves (its `SERVED_FAMILIES`), derived from the
+    /// catalog so the two lists cannot drift. They must match `TurboRelay/mflux-worker/worker.py`.
+    static var mfluxFamilyNames: Set<String> {
+        Set(allCases.filter { $0.engine == .mflux }.map(\.rawValue))
     }
 
-    var engine: ModelEngine { ModelFamily.engine(forFamily: rawValue) }
+    static func engine(forFamily family: String) -> ModelEngine {
+        ModelFamily(rawValue: family)?.engine ?? .turbo
+    }
+
+    var engine: ModelEngine {
+        switch self {
+        case .krea2, .qwenImage21: .mflux
+        default: .turbo
+        }
+    }
 }
 
 nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
@@ -300,6 +334,12 @@ nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
         (family == .flux2Klein || family == .flux3Klein) && (variant ?? id).lowercased().contains("base")
     }
 
+    /// Qwen-Image 2.1 Turbo is the 8-step distillation of the base model: its saved sigma grid,
+    /// and no CFG (guidance above 1 is refused by mflux).
+    private var isQwen21Turbo: Bool {
+        family == .qwenImage21 && (variant ?? id).lowercased().contains("turbo")
+    }
+
     /// FLUX.2 Klein's transformer width, which its LoRAs must match: 4096 for 9B, 3072 for 4B.
     var kleinWidth: Int? {
         guard family == .flux2Klein else { return nil }
@@ -311,7 +351,10 @@ nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
         case .ming, .mossImage, .qwenImage, .qwenImageEdit, .idol, .mossSoundEffect: true
         // The catalog's SenseNova packs are the 8-step distillation, which runs without guidance.
         // MiniMax-Music3's guidance (1.5 for its language models, 1.7 for the flow) is the reference's own, fixed.
-        case .zImageTurbo, .senseNova, .ltx2, .ltx25, .seedVR2, .minimaxMusic3: false
+        // Krea 2 Turbo is distilled for guidance 1; Qwen-Image 2.1 is trained without CFG, but its
+        // base checkpoint still runs true CFG above 1, with a negative prompt.
+        case .zImageTurbo, .senseNova, .ltx2, .ltx25, .seedVR2, .minimaxMusic3, .krea2: false
+        case .qwenImage21: !isQwen21Turbo
         case .flux2Klein, .flux3Klein: isKleinBase
         }
     }
@@ -340,6 +383,9 @@ nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
         case .minimaxMusic3: 30
         // OpenMOSS's default, on the whole 30 s of latents whatever the length.
         case .mossSoundEffect: 100
+        case .krea2: 8
+        // Qwen-Image 2.1's recommended 40, or the Turbo distillation's 8 saved nodes.
+        case .qwenImage21: isQwen21Turbo ? 8 : 40
         }
     }
 
@@ -377,6 +423,10 @@ nonisolated struct ModelDescriptor: Identifiable, Hashable, Codable, Sendable {
         // The reference's own limit is 30.
         case .minimaxMusic3: 8...30
         case .mossSoundEffect: 10...200
+        // Krea 2 Turbo is trained at 8; a little either side still works.
+        case .krea2: 4...16
+        // Qwen-Image 2.1 base at its 40, Turbo on its saved 8-node curve.
+        case .qwenImage21: isQwen21Turbo ? 6...12 : 10...50
         }
     }
 }
@@ -571,6 +621,48 @@ enum ModelCatalog {
             recommendedMemoryGB: 32,
             isBuiltIn: true
         ),
+        // Krea 2 Turbo (Krea.ai, Krea 2 Community License) as mflux runs it: a q4 mflux-save pack
+        // with the transformer's shards at the top and the text encoder, tokenizer and VAE in
+        // folders. Only the mflux worker runs this family. 15.8 GB on disk; the memory figure is
+        // an estimate until the first real render.
+        ModelDescriptor(
+            name: "Krea 2 Turbo · 32 GB RAM",
+            detail: "Krea.ai's 8-step distilled model, built on the Qwen-Image stack: sharp photos, illustration and styles. Runs on the render Mac's mflux engine. The 4-bit version.",
+            family: .krea2,
+            source: .huggingFace(repo: "mflux-community/krea-2-turbo-mflux-q4"),
+            revision: "fa0ba74dc2e50c4288a81216e05487c343196bf7",
+            sizeBytes: 15_777_189_828,
+            license: "Krea 2 Community License",
+            recommendedMemoryGB: 32,
+            isBuiltIn: true
+        ),
+        // Qwen-Image 2.1 (Alibaba, Qwen Research License — non-commercial), converted with mflux
+        // 0.24.0: the 7.1B block-causal model, 40 steps without guidance. mflux only.
+        ModelDescriptor(
+            name: "Qwen-Image 2.1 · 24 GB RAM",
+            detail: "Alibaba's successor to Qwen-Image: rich scenes and long text, 40 steps without guidance. Runs on the render Mac's mflux engine. The 4-bit version.",
+            family: .qwenImage21,
+            source: .huggingFace(repo: "mflux-community/qwen-image-2-1-mflux-q4"),
+            revision: "b6c0fc76350650482d13aea89b316c28cd487f7f",
+            sizeBytes: 10_638_928_735,
+            license: "Qwen Research License",
+            recommendedMemoryGB: 24,
+            isBuiltIn: true
+        ),
+        // The Turbo distillation of Qwen-Image 2.1 (Qwen Research License), an mflux 4-bit quant
+        // of the official Turbo checkpoint. Its 8 saved sigma nodes are selected by the variant.
+        ModelDescriptor(
+            name: "Qwen-Image 2.1 Turbo · 24 GB RAM",
+            detail: "The distilled Qwen-Image 2.1: an image in 8 steps without guidance. Runs on the render Mac's mflux engine. The 4-bit version.",
+            family: .qwenImage21,
+            source: .huggingFace(repo: "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"),
+            revision: "972ad82377ce1190b64256d35966108c500075df",
+            sizeBytes: 10_638_963_843,
+            variant: "qwen-image-2.1-turbo",
+            license: "Qwen Research License",
+            recommendedMemoryGB: 24,
+            isBuiltIn: true
+        ),
         // SeedVR2 3B in float16 (ByteDance's one-step diffusion upscaler, as mflux runs it): the
         // transformer and the VAE of the original checkpoint. Measured on an M1 Max: 688 × 384 to
         // 1376 × 768 in 18 s, 672 × 880 to 1344 × 1760 in 34 s, peaking at 10.5 GB.
@@ -652,4 +744,15 @@ enum ModelCatalog {
         ("flux2-klein-base-4b", "4B base"),
         ("flux2-klein-base-9b", "9B base"),
     ]
+
+    /// SHA-256 of the sorted "id|family|revision" list, its first 16 hex digits: the
+    /// `catalog_version` of the spec (§Handshake), which `/hello` and `/models` share and the
+    /// client compares with its own catalog (A6/pitfall 11).
+    static var version: String {
+        let joined = builtIn
+            .map { "\($0.id)|\($0.family.rawValue)|\($0.revision ?? "main")" }
+            .sorted()
+            .joined(separator: "\n")
+        return String(SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
+    }
 }

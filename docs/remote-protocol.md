@@ -174,9 +174,10 @@ Engine events pass through unchanged **except**:
    (the engine decodes them small) and bounded — if one ever exceeds 1 MiB the
    bridge sends `{event: "preview", id, step, file_id}` instead.
 2. **`done` carries a file handle, not a path (A2).**
-   `{event: "done", id, file_id, size, media_type, seed, width, height,
+   `{event: "done", id, file_id, size, media_type, engine, seed, width, height,
    seconds, peak_memory, timings}`. `media_type` is `image/png`, `video/mp4`,
-   `audio/wav`, or `model/gltf-binary` — the catalog passthrough. A video's
+   `audio/wav`, or `model/gltf-binary` — the catalog passthrough. `engine` is
+   `turbo` or `mflux` (A9), so the client's history can tag the render. A video's
    poster adds `poster_file_id`. The client fetches via `GET /files/{file_id}`
    and saves into its own history exactly as a local render would, so
    provenance metadata written by the engine survives the trip (pitfall 10).

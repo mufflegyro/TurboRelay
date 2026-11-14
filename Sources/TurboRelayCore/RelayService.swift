@@ -183,7 +183,7 @@ public final class RelayService: @unchecked Sendable {
         case ("GET", "/models"):
             respond(.json([
                 "models": downloads?.modelsView() ?? [],
-                "catalog_version": Self.sha256Prefix(ModelCatalog.builtIn.map { "\($0.id)|\($0.family.rawValue)|\($0.revision ?? "main")" }.sorted().joined(separator: "\n")),
+                "catalog_version": ModelCatalog.version,
             ]))
         case ("POST", let path) where path.hasPrefix("/models/") && path.hasSuffix("/download/cancel"):
             let id = String(path.dropFirst("/models/".count).dropLast("/download/cancel".count))
@@ -271,9 +271,5 @@ public final class RelayService: @unchecked Sendable {
 
     static func isHex64(_ string: String) -> Bool {
         string.count == 64 && string.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
-    }
-
-    static func sha256Prefix(_ string: String) -> String {
-        String(SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
     }
 }
