@@ -62,9 +62,12 @@ buffer cache; the text encoder is released only for the families whose adapters 
 
 ## Running
 
+The relay installs this environment by itself on the **first mflux job** (menu: "installing
+mflux", `/models`: `installing`), using `uv` and the `requirements.txt` in the app bundle.
+To make it by hand — or to rebuild it after changing the pin:
+
 ```bash
-# once, from the relay's home directory (the lazy venv is installed on the first mflux job):
-uv venv --python 3.13 "$HOME/Library/Application Support/TurboRelay/mflux-venv"
+uv venv --clear --python 3.13 "$HOME/Library/Application Support/TurboRelay/mflux-venv"
 uv pip install --python "$HOME/Library/Application Support/TurboRelay/mflux-venv/bin/python" \
   -r mflux-worker/requirements.txt
 
@@ -72,6 +75,9 @@ uv pip install --python "$HOME/Library/Application Support/TurboRelay/mflux-venv
 # by hand:
 printf '%s\n' '{"cmd": "shutdown"}' | "$HOME/Library/Application Support/TurboRelay/mflux-venv/bin/python" mflux-worker/worker.py serve
 ```
+
+`config.json`'s `mflux_python` overrides the venv (a Python that already has mflux); empty
+means the lazy venv. `tests/e2e-install.py` in the relay exercises the lazy path for real.
 
 ## Conformance
 

@@ -186,6 +186,13 @@ Engine events pass through unchanged **except**:
 4. **New: `log` events.** `{event: "log", message}` — the engine's stderr
    relayed, so the client's Engine Log view stays alive remotely (the pipe
    carries stderr separately; the wire folds it in).
+5. **New: `fatal` events (A10).** `{event: "fatal", reason, message}` — the
+   engine refused to start: the mflux worker's venv does not hold mflux
+   (`reason: "mflux-missing"`) or holds another version
+   (`reason: "mflux-version"`). The bridge fails that engine's job with the
+   message, stops the supervisor (no crash loop), and reports the state from
+   `/models`; the worker exits 2. The native engine may also emit `fatal`, but
+   the relay has no install step for it.
 
 ### Ordering and cancellation
 
@@ -245,6 +252,14 @@ connection state.
 `engine` is `turbo` (native `turbo-engine`) or `mflux` (the fallback worker,
 A9). A job for an `mflux` model runs on the worker; the client can show the
 badge straight from this field.
+
+The response's top-level `mflux` object reports the fallback environment:
+`{"state": "missing" | "installing" | "installed" | "failed" | "unavailable",
+"message": "…"}`. `missing` is normal before the first mflux job: the venv is
+installed lazily then (decision 2), so a relay that never runs Krea 2 or
+Qwen-Image 2.1 never downloads Python or mflux. `installing` is visible in
+this poll and in the server's menu; a failure carries the readable reason
+(uv absent, a download error, or the worker's `fatal` message, A10).
 
 `state` ∈ `downloaded | downloading | failed | not-downloaded`. Progress for
 `downloading` arrives as WS events (distinct from engine events):
@@ -334,3 +349,4 @@ shape once a small model is cached on a real Mac.
 | A7 per-backend history tag | Client-side (M4), noted here for the estimate implication |
 | A8 injectable token, deliberate engine env | Model catalog and downloads |
 | A9 two engines, routed by family, one model at a time | Layering; Handshake; Engine channel; `/models`; job registry |
+| A10 engine `fatal` + lazy mflux environment | Events 5; `/models` mflux state |

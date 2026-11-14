@@ -14,6 +14,10 @@ public final class RelayService: @unchecked Sendable {
     private var bridge: Bridge?
     private var server: HTTPWebSocketServer?
     private var downloads: DownloadManager?
+    private var installer: MFluxInstaller?
+    private var mfluxWorkerPath: String?
+    private var mfluxEnvironment: [String: String] = [:]
+    private var mfluxProblem: String?
 
     public init(home: URL, config: RelayConfig) {
         self.home = home
@@ -30,8 +34,39 @@ public final class RelayService: @unchecked Sendable {
         // the parent shell had.
         environment["HF_HOME"] = config.modelRootURL.deletingLastPathComponent().path
 
-        // Two engines, one pipe protocol. The native engine boots now; the mflux worker waits
-        // for its first job, and is simply absent when its venv is not installed.
+        // The mflux worker: an explicit Python from config (tests, a hand-built venv), or the
+        // relay home's venv created on the first mflux job. Its script and pinned requirements
+        // ship in the bundle's Resources.
+        let workerPath = resolvedMFluxWorker()
+        let explicitPython = config.mfluxPython.isEmpty ? nil : resolvedMFluxPython()
+        if !config.mfluxPython.isEmpty, explicitPython == nil {
+            mfluxProblem = "The mflux Python configured in config.json was not found."
+        }
+        var mfluxEnvironment = environment
+        // A signed bundle is read-only: never write .pyc beside worker.py, and keep the log
+        // lines flowing without Python's buffering.
+        mfluxEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
+        mfluxEnvironment["PYTHONUNBUFFERED"] = "1"
+        mfluxWorkerPath = workerPath
+        self.mfluxEnvironment = mfluxEnvironment
+
+        var installer: MFluxInstaller?
+        if config.mfluxPython.isEmpty {
+            if workerPath == nil {
+                mfluxProblem = "The mflux worker script is not bundled (mflux-worker/worker.py)."
+            } else if let requirements = resolvedMFluxRequirements() {
+                installer = MFluxInstaller(home: home, requirementsPath: requirements)
+            } else {
+                mfluxProblem = "The mflux requirements are not bundled (mflux-worker/requirements.txt)."
+            }
+        }
+        self.installer = installer
+
+        var initialPython = explicitPython
+        if let installer, installer.state == .installed { initialPython = installer.pythonPath }
+
+        // Two engines, one pipe protocol. The native engine boots now; the mflux worker starts
+        // with its first job, creating its venv then if it does not exist yet.
         let router = EngineRouter { engine in
             switch engine {
             case .turbo:
@@ -39,16 +74,9 @@ public final class RelayService: @unchecked Sendable {
                                         arguments: ["serve"] + config.engineArgs,
                                         environment: environment)
             case .mflux:
-                guard let python = self.resolvedMFluxPython(), let worker = self.resolvedMFluxWorker() else {
-                    return nil
-                }
-                var mfluxEnvironment = environment
-                // A signed bundle is read-only: never write .pyc beside worker.py, and keep
-                // the log lines flowing without Python's buffering.
-                mfluxEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
-                mfluxEnvironment["PYTHONUNBUFFERED"] = "1"
+                guard let python = initialPython, let workerPath else { return nil }
                 return EngineSupervisor(name: "mflux", executablePath: python,
-                                        arguments: [worker, "serve"],
+                                        arguments: [workerPath, "serve"],
                                         environment: mfluxEnvironment)
             }
         }
@@ -78,6 +106,17 @@ public final class RelayService: @unchecked Sendable {
         bridge.onChange = { [weak self] in self?.onChange?() }
         self.bridge = bridge
 
+        // The worker script and requirements make the mflux families servable even before the
+        // first job installs the venv; that job calls installMFlux (decision 2).
+        bridge.mfluxSupported = workerPath != nil && (explicitPython != nil || installer != nil)
+        if let installer {
+            bridge.installMFlux = { [weak self] completion in
+                self?.installMFlux(installer, completion: completion)
+            }
+            installer.onLog = { [weak bridge] line in bridge?.logRelay(line) }
+            installer.onChange = { [weak self] in self?.onChange?() }
+        }
+
         server.onLog = { [weak self] line in self?.onChange?() }
         // Register/unregister must refresh the menu's client count live (the engine log
         // used to mask this by firing onLog constantly; a healthy engine is quiet).
@@ -100,6 +139,7 @@ public final class RelayService: @unchecked Sendable {
     }
 
     public func stop() {
+        installer?.stopInstall()
         bridge?.stop()
         server?.stop()
     }
@@ -121,6 +161,16 @@ public final class RelayService: @unchecked Sendable {
         }
         if let active = bridge.activeEngineName() {
             state += " · \(active) engine"
+        }
+        // Decision 2: the menu says so when the mflux environment is absent or being made.
+        if let mflux = mfluxStatus() {
+            switch mflux["state"] as? String {
+            case "missing": state += " · mflux not installed"
+            case "installing": state += " · installing mflux"
+            case "failed": state += " · mflux failed"
+            case "unavailable": state += " · mflux unavailable"
+            default: break
+            }
         }
         return "Port \(port) · \(state) · \(clients) client(s)\(loaded.map { " · \($0)" } ?? "")"
     }
@@ -164,6 +214,50 @@ public final class RelayService: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: path) ? path : nil
     }
 
+    /// The worker's pinned requirements: configured, else the bundle's `requirements.txt`.
+    private func resolvedMFluxRequirements() -> String? {
+        let path: String
+        if !config.mfluxRequirements.isEmpty {
+            path = (config.mfluxRequirements as NSString).expandingTildeInPath
+        } else if let bundled = Bundle.main.url(forResource: "requirements", withExtension: "txt") {
+            path = bundled.path
+        } else {
+            return nil
+        }
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
+
+    /// The first mflux job's install finished: register its worker (once), then let the waiting
+    /// wire command run.
+    private func installMFlux(_ installer: MFluxInstaller, completion: @escaping (Bool, String?) -> Void) {
+        installer.ensureInstalled { [weak self] success, message in
+            guard let self, success, let bridge = self.bridge, let worker = self.mfluxWorkerPath else {
+                completion(success, message ?? "The mflux engine could not be installed on the render Mac.")
+                return
+            }
+            if !bridge.router.isAvailable(.mflux) {
+                bridge.router.register(
+                    EngineSupervisor(name: "mflux", executablePath: installer.pythonPath,
+                                     arguments: [worker, "serve"], environment: self.mfluxEnvironment),
+                    for: .mflux)
+            }
+            completion(true, nil)
+        }
+    }
+
+    /// The mflux engine's state for `/models` and the menu: the lazy installer's, an explicit
+    /// Python's, or why neither can work.
+    private func mfluxStatus() -> [String: Any]? {
+        // A worker that refused its environment (mflux absent or another version) outranks the
+        // venv's existence: reinstalling is what fixes it, and the message says so.
+        if let fatal = bridge?.mfluxFatalMessage() {
+            return ["state": "failed", "message": fatal]
+        }
+        if let installer { return installer.statusJSON() }
+        if bridge?.router.isAvailable(.mflux) == true { return ["state": "installed"] }
+        return ["state": "unavailable", "message": mfluxProblem ?? "The mflux engine is not configured."]
+    }
+
     // MARK: - HTTP routing
 
     private func handle(_ request: HTTPRequest, bridge: Bridge?, respond: @escaping (HTTPResponse) -> Void) {
@@ -181,10 +275,12 @@ public final class RelayService: @unchecked Sendable {
         case ("GET", "/log"):
             respond(.json(["lines": bridge.recentLog()]))
         case ("GET", "/models"):
-            respond(.json([
+            var payload: [String: Any] = [
                 "models": downloads?.modelsView() ?? [],
                 "catalog_version": ModelCatalog.version,
-            ]))
+            ]
+            if let mflux = mfluxStatus() { payload["mflux"] = mflux }
+            respond(.json(payload))
         case ("POST", let path) where path.hasPrefix("/models/") && path.hasSuffix("/download/cancel"):
             let id = String(path.dropFirst("/models/".count).dropLast("/download/cancel".count))
             downloads?.cancel(id.removingPercentEncoding ?? id)

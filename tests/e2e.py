@@ -259,6 +259,9 @@ def main() -> None:
         check("/hello and /models share one catalog_version",
               hello.get("catalog_version") == models_payload.get("catalog_version"),
               f"{hello.get('catalog_version')} vs {models_payload.get('catalog_version')}")
+        check("an explicit mflux Python reports installed",
+              (models_payload.get("mflux") or {}).get("state") == "installed",
+              str(models_payload.get("mflux")))
 
         # A second upload for a LoRA handle.
         lora_bytes = b"lora-weights-bytes" * 8

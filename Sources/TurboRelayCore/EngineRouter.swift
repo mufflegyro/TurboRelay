@@ -48,6 +48,19 @@ public final class EngineRouter: @unchecked Sendable {
         return supervisors[engine] != nil
     }
 
+    /// Adds an engine after launch — the mflux worker, once its lazy install finishes. The old
+    /// supervisor, if any, is stopped; the callbacks are wired the same way as at init.
+    public func register(_ supervisor: EngineSupervisor, for engine: ModelEngine) {
+        lock.lock()
+        let previous = supervisors[engine]
+        supervisors[engine] = supervisor
+        lock.unlock()
+        previous?.stop()
+        supervisor.onEvent = { [weak self] line in self?.deliverEvent(engine, line) }
+        supervisor.onLog = { [weak self] line in self?.onLog?(engine, line) }
+        supervisor.onExit = { [weak self] intentional in self?.handleExit(engine, intentional: intentional) }
+    }
+
     public func activeEngine() -> ModelEngine? {
         lock.lock()
         defer { lock.unlock() }
@@ -135,6 +148,18 @@ public final class EngineRouter: @unchecked Sendable {
         sendTo?.send(line)
         if stop != nil || start != nil { onActiveChange?() }
         return true
+    }
+
+    /// Removes an engine that cannot run — the worker reported a fatal environment error (mflux
+    /// missing from its venv, or the wrong version): stop it for good so the supervisor does not
+    /// restart it, and free the active slot. The bridge fails its jobs.
+    public func stopEngine(_ engine: ModelEngine) {
+        lock.lock()
+        let supervisor = supervisors.removeValue(forKey: engine)
+        if active == engine { active = nil }
+        lock.unlock()
+        supervisor?.stop()
+        onActiveChange?()
     }
 
     /// A command that is not tied to a family (unload): it goes to the engine holding the model.

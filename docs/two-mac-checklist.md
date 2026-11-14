@@ -81,6 +81,28 @@ the other — update whichever.
   restart the queue can be re-run.
 - Quit and relaunch Turbo MLX: availability and history survive.
 
+## 6 · mflux fallback: Krea 2 and Qwen-Image 2.1
+
+These families run on the render Mac's mflux worker, not the native engine. They appear in
+Turbo MLX's picker only while the render Mac is connected.
+
+1. On the render Mac, install `uv` once (`brew install uv`); the relay uses it to create the
+   worker's Python environment. The environment is **not** created at launch.
+2. In Turbo MLX, choose **Krea 2 Turbo** (15.8 GB) or **Qwen-Image 2.1** (10.6 GB, or its
+   Turbo) and download it from the server as usual.
+3. The first Generate installs the environment: the menu bar shows **installing mflux**, the
+   Engine Log shows the `uv` run, and `/models` moves from `missing` to `installing` to
+   `installed`. It is about 1.1 GB and several minutes, once.
+4. The job then runs on the mflux worker. The first real render also settles the provisional
+   numbers in the catalog: note the seconds and peak memory from the log, and compare them
+   with the 32 GB (Krea) / 24 GB (Qwen) recommendations. The Osaurus Turbo pack is the one to
+   try first; `zimageapp/qwen-image-2.1-turbo-q4` remains the fallback if it does not load
+   with stock mflux 0.24.0.
+5. If the menu says **mflux failed** or the job fails at install, the message names the cause
+   (`uv` absent, a download error, or the worker's `fatal` reason); fix it and submit again.
+   Qwen-Image 2.1 is under the Qwen Research License (non-commercial use); Krea 2 is under
+   its community license.
+
 ## If something doesn't work
 
 - The server's log: menu bar → the status line, or

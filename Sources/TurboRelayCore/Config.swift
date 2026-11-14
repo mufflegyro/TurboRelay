@@ -41,6 +41,8 @@ public struct RelayConfig {
     public var mfluxPython: String = ""
     /// The mflux worker script; empty = the app bundle's `worker.py` (build.sh copies it).
     public var mfluxWorker: String = ""
+    /// The worker's pinned requirements; empty = the app bundle's `requirements.txt`.
+    public var mfluxRequirements: String = ""
 
     public static func load(home: URL) -> RelayConfig {
         let file = home.appendingPathComponent("config.json")
@@ -54,7 +56,8 @@ public struct RelayConfig {
             hubBaseURL: object["hub_base_url"] as? String ?? "",
             engineArgs: object["engine_args"] as? [String] ?? [],
             mfluxPython: object["mflux_python"] as? String ?? "",
-            mfluxWorker: object["mflux_worker"] as? String ?? ""
+            mfluxWorker: object["mflux_worker"] as? String ?? "",
+            mfluxRequirements: object["mflux_requirements"] as? String ?? ""
         )
         if config.token.isEmpty {
             var bytes = [UInt8](repeating: 0, count: 32)
@@ -67,6 +70,7 @@ public struct RelayConfig {
             "hf_token": config.hfToken, "hub_base_url": config.hubBaseURL,
             "engine_args": config.engineArgs,
             "mflux_python": config.mfluxPython, "mflux_worker": config.mfluxWorker,
+            "mflux_requirements": config.mfluxRequirements,
         ], options: [.prettyPrinted, .withoutEscapingSlashes]) {
             try? data.write(to: file, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)

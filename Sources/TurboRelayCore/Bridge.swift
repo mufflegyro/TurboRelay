@@ -40,6 +40,9 @@ public final class Bridge: @unchecked Sendable {
     /// Each engine's last `ready` event, keyed by engine: `/hello` and the greeting compose
     /// the active engine's strings with the union of the families the relay can serve.
     private var readyInfo: [ModelEngine: [String: Any]] = [:]
+    /// The mflux worker's last `fatal` message (a broken venv): `/models` and the menu show it
+    /// instead of "installed" until a worker starts cleanly.
+    private var mfluxFatal: String?
     private var logLines: [String] = []
     private var lastLoadedName: String?
     private var activeJobs = 0
@@ -58,6 +61,11 @@ public final class Bridge: @unchecked Sendable {
     /// Set by the service: sends a wire line to every connected client.
     public var broadcast: ((String) -> Void)?
     public var onChange: (() -> Void)?
+    /// The relay can serve the mflux families (its worker script and, in the lazy path, uv):
+    /// `/hello` advertises them before the first job has installed anything.
+    public var mfluxSupported = false
+    /// Installs the mflux venv on demand; nil when mflux is explicit or not configured.
+    public var installMFlux: ((@escaping (Bool, String?) -> Void) -> Void)?
 
     public init(home: URL, modelRoot: URL, router: EngineRouter) {
         self.home = home
@@ -78,22 +86,37 @@ public final class Bridge: @unchecked Sendable {
             onChange?()
             return
         }
+        failRunningJobs(of: engine, message: "The \(engine.rawValue) engine quit unexpectedly on the render Mac; it is restarting.")
+        onChange?()
+    }
+
+    /// Fails every running job of `engine` (a crash, or the worker refusing to start) and tells
+    /// the clients. Returns the failed ids.
+    @discardableResult
+    private func failRunningJobs(of engine: ModelEngine, message: String) -> [String] {
         lock.lock()
         let running = jobs.values.filter {
             $0.engine == engine && ($0.status == "running" || $0.status == "queued")
         }
         for job in running {
             jobs[job.id]?.status = "failed"
-            jobs[job.id]?.error = "The \(engine.rawValue) engine quit unexpectedly on the render Mac; it is restarting."
+            jobs[job.id]?.error = message
         }
         activeJobs = max(0, activeJobs - running.count)
         keepAwake.isOn = activeJobs > 0
         lock.unlock()
         for job in running {
-            emit(jsonLine(["event": "failed", "id": job.id,
-                           "message": "The \(engine.rawValue) engine quit unexpectedly on the render Mac; it is restarting. Run the job again."]))
+            emit(jsonLine(["event": "failed", "id": job.id, "message": message + " Run the job again."]))
         }
-        onChange?()
+        return running.map(\.id)
+    }
+
+    /// The mflux fatal message, if its worker refused to start (the venv is missing mflux or
+    /// holds another version).
+    public func mfluxFatalMessage() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mfluxFatal
     }
 
     public func start() { router.start() }
@@ -124,8 +147,9 @@ public final class Bridge: @unchecked Sendable {
             if let list = info["families"] as? [String] { families.formUnion(list) }
         }
         // The worker's ready is only seen once it has started; its families are known from
-        // the moment the venv exists, so the handshake does not change after the first job.
-        if router.isAvailable(.mflux) { families.formUnion(ModelFamily.mfluxFamilyNames) }
+        // the moment the relay can install or run it, so the handshake does not change after
+        // the first job.
+        if mfluxSupported { families.formUnion(ModelFamily.mfluxFamilyNames) }
         return families.sorted()
     }
 
@@ -213,8 +237,8 @@ public final class Bridge: @unchecked Sendable {
             return
         }
         switch cmd {
-        case "generate": translateGenerate(object)
-        case "load": translateLoad(object)
+        case "generate": translateGenerate(object, text)
+        case "load": translateLoad(object, text)
         case "cancel":
             guard let id = object["id"] as? String else {
                 sendLog("cancel without id")
@@ -263,7 +287,7 @@ public final class Bridge: @unchecked Sendable {
         return nil
     }
 
-    private func translateGenerate(_ object: [String: Any]) {
+    private func translateGenerate(_ object: [String: Any], _ text: String) {
         guard let jobID = object["id"] as? String, !jobID.isEmpty else {
             sendLog("generate without id")
             return
@@ -276,7 +300,22 @@ public final class Bridge: @unchecked Sendable {
         let family = model["family"] as? String ?? ""
         let engine = ModelFamily.engine(forFamily: family)
         if engine == .mflux, !router.isAvailable(.mflux) {
-            fail(jobID: jobID, message: "\(family) needs the mflux engine, which is not installed on the render Mac. Install the relay's mflux environment first.")
+            // Decision 2: the environment is created on the first mflux job, not at launch.
+            // The wire command waits here (its uploads are content-addressed and stay put)
+            // and runs again once the venv's worker is registered.
+            guard let installMFlux else {
+                fail(jobID: jobID, message: "\(family) needs the mflux engine, which is not installed on the render Mac. Install the relay's mflux environment first.")
+                return
+            }
+            sendLog("mflux is not installed yet; installing it for \(family) (this happens once)")
+            installMFlux { [weak self] success, message in
+                guard let self else { return }
+                if success {
+                    self.wireCommand(text)
+                } else {
+                    self.fail(jobID: jobID, message: message ?? "The mflux engine could not be installed on the render Mac.")
+                }
+            }
             return
         }
         // The catalog pins a revision; the locator falls back to whatever snapshot is on disk
@@ -397,7 +436,7 @@ public final class Bridge: @unchecked Sendable {
         router.send(jsonLine(command), to: engine, startsJob: true, jobID: jobID)
     }
 
-    private func translateLoad(_ object: [String: Any]) {
+    private func translateLoad(_ object: [String: Any], _ text: String) {
         guard var model = deepCopy(object["model"]) as? [String: Any],
               let name = model["name"] as? String else {
             sendLog("load.model.name is required")
@@ -406,7 +445,18 @@ public final class Bridge: @unchecked Sendable {
         let family = model["family"] as? String ?? ""
         let engine = ModelFamily.engine(forFamily: family)
         if engine == .mflux, !router.isAvailable(.mflux) {
-            sendLog("\(family) needs the mflux engine, which is not installed on the render Mac")
+            guard let installMFlux else {
+                sendLog("\(family) needs the mflux engine, which is not installed on the render Mac")
+                return
+            }
+            sendLog("mflux is not installed yet; installing it for \(family) (this happens once)")
+            installMFlux { [weak self] success, message in
+                if success {
+                    self?.wireCommand(text)
+                } else {
+                    self?.sendLog(message ?? "The mflux engine could not be installed on the render Mac.")
+                }
+            }
             return
         }
         guard let resolved = locator.resolve(name, revision: ModelCatalog.builtIn.first { $0.id == name }?.revision) else {
@@ -436,6 +486,7 @@ public final class Bridge: @unchecked Sendable {
             lock.lock()
             readyInfo[engine] = dict
             serverMemoryBytes = dict["memory"] as? Int64 ?? 0
+            if engine == .mflux { mfluxFatal = nil }
             lock.unlock()
             // A client that connected before an engine finished booting got no greeting (or
             // the previous engine's): broadcast the composed ready, not merely cache it.
@@ -487,6 +538,19 @@ public final class Bridge: @unchecked Sendable {
             finishJob(dict["id"] as? String, status: "failed", error: dict["message"] as? String)
         case "cancelled":
             finishJob(dict["id"] as? String, status: "cancelled", error: nil)
+        case "fatal":
+            // The mflux worker refused its environment (mflux absent from the venv, or another
+            // version). Fail its job with that message, stop the supervisor so it does not
+            // crash-loop, and let /models and the menu show the reason.
+            if engine == .mflux {
+                let message = dict["message"] as? String ?? "The mflux engine could not start."
+                lock.lock()
+                mfluxFatal = message
+                lock.unlock()
+                failRunningJobs(of: engine, message: message)
+                router.stopEngine(.mflux)
+                onChange?()
+            }
         default:
             break // phase, progress, unloaded, load_failed pass through
         }
@@ -507,6 +571,11 @@ public final class Bridge: @unchecked Sendable {
 
     private func sendLog(_ message: String) {
         appendLog("[relay] " + message)
+    }
+
+    /// A service-level line for the engine log (the mflux install's progress and errors).
+    public func logRelay(_ message: String) {
+        sendLog(message)
     }
 
     // MARK: - Staging
