@@ -335,7 +335,7 @@ public final class Bridge: @unchecked Sendable {
         // cache, so the bridge hands the engine its snapshot.
         if let family = ModelFamily(rawValue: family), let companion = family.companion {
             guard let companionPath = locator.companionLocation(of: family) else {
-                fail(jobID: jobID, message: "\(family.displayName) needs its text encoder (\(companion.name)), which is not on the render Mac. Download \(name) again in Models so its companion comes with it, or check that the cache holds \(companion.repo).")
+                fail(jobID: jobID, message: "\(family.displayName) needs its text encoder (\(companion.name)), which is not downloaded completely on the render Mac. Download \(name) in Models — only the missing companion is fetched — or check that the cache holds \(companion.repo).")
                 return
             }
             model["text_encoder_path"] = companionPath.path
@@ -478,7 +478,7 @@ public final class Bridge: @unchecked Sendable {
         // encoder the engine cannot load LTX-2.3 at all.
         if let family = ModelFamily(rawValue: family), let companion = family.companion {
             guard let companionPath = locator.companionLocation(of: family) else {
-                sendLog("\(family.displayName) needs its text encoder (\(companion.name)), which is not on the render Mac; download \(name) again in Models so its companion comes with it.")
+                sendLog("\(family.displayName) needs its text encoder (\(companion.name)), which is not downloaded completely on the render Mac; download \(name) in Models so its companion comes with it.")
                 return
             }
             model["text_encoder_path"] = companionPath.path
