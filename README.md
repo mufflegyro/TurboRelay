@@ -54,6 +54,7 @@ Everything lives in `$TURBORELAY_HOME` (default
 | `staging/results/` | Finished jobs, streamed to clients via `GET /files/{file_id}` (last 20 kept) |
 | `staging/uploads/<aa>/<sha256>` | Content-addressed uploads (reference images, last frames, LoRAs) |
 | `custom-models.json` | Descriptors of models added by hand (A10); each `/models` entry carries its descriptor, so every client lists it |
+| `loras/<sha256>.safetensors`, `loras.json` | The LoRA library: every adapter a job used, kept for another client to import (`GET /loras`) |
 
 The menu bar shows the port, engine state, connected clients and the model in memory,
 and can copy the pairing token — the client pastes it into Turbo MLX's remote-backend
@@ -85,6 +86,11 @@ settings.
   `missing`/`installing`/`installed`/`failed`. The worker's `fatal` event stops a broken
   install from crash-looping. The real Krea/Qwen renders are the user's run on the relay Mac
   (`docs/two-mac-checklist.md`), as with every real-model check.
+- **LoRA library across clients** — every LoRA a job uses is kept under
+  `loras/<sha256>.safetensors` (hardlinked from the upload) and listed by `GET /loras`;
+  `GET /loras/{id}` streams it in chunks. On a client, LoRAs → **Import from the Render
+  Mac…** copies one into the local library, so a new Mac does not need the file again by
+  hand. Endpoints and the import flow are in `docs/remote-protocol.md`.
 
 Failure paths are covered too: engine crash mid-job fails the running job and restarts the
 engine (M2 e2e), and a disconnect mid-job reconnects on its own and delivers the finished
