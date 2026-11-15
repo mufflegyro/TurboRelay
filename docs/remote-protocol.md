@@ -186,7 +186,7 @@ Engine events pass through unchanged **except**:
 4. **New: `log` events.** `{event: "log", message}` — the engine's stderr
    relayed, so the client's Engine Log view stays alive remotely (the pipe
    carries stderr separately; the wire folds it in).
-5. **New: `fatal` events (A10).** `{event: "fatal", reason, message}` — the
+5. **New: `fatal` events (A11).** `{event: "fatal", reason, message}` — the
    engine refused to start: the mflux worker's venv does not hold mflux
    (`reason: "mflux-missing"`) or holds another version
    (`reason: "mflux-version"`). The bridge fails that engine's job with the
@@ -253,13 +253,19 @@ connection state.
 A9). A job for an `mflux` model runs on the worker; the client can show the
 badge straight from this field.
 
+Each entry also carries `descriptor`, the relay's full `ModelDescriptor`
+(`family`, `variant`, `quantize`, `source`, `revision`, `sizeBytes`, license,
+…). A client that does not have that model in its own catalog decodes the
+descriptor and lists it while connected (A10): that is how a model added by
+hand on the relay reaches a new client.
+
 The response's top-level `mflux` object reports the fallback environment:
 `{"state": "missing" | "installing" | "installed" | "failed" | "unavailable",
 "message": "…"}`. `missing` is normal before the first mflux job: the venv is
 installed lazily then (decision 2), so a relay that never runs Krea 2 or
 Qwen-Image 2.1 never downloads Python or mflux. `installing` is visible in
 this poll and in the server's menu; a failure carries the readable reason
-(uv absent, a download error, or the worker's `fatal` message, A10).
+(uv absent, a download error, or the worker's `fatal` message, A11).
 
 `state` ∈ `downloaded | downloading | failed | not-downloaded`. Progress for
 `downloading` arrives as WS events (distinct from engine events):
@@ -291,8 +297,10 @@ client's `ModelDescriptor` as a JSON body. The server registers it (idempotent;
 a built-in id keeps the catalog's descriptor), persists it to
 `custom-models.json` in the relay home so it survives a restart, includes it in
 `GET /models` after the built-ins, and then downloads it like any other model.
-Without a body an unknown id is still refused with
-`no such model in the catalog`.
+Its entry carries the descriptor, so **another client** connected to the relay
+lists and can use it without adding it again; it is shown only in remote mode
+and disappears when that client runs its own engine. Without a body an unknown
+id is still refused with `no such model in the catalog`.
 
 ## Log relay
 
@@ -349,4 +357,5 @@ shape once a small model is cached on a real Mac.
 | A7 per-backend history tag | Client-side (M4), noted here for the estimate implication |
 | A8 injectable token, deliberate engine env | Model catalog and downloads |
 | A9 two engines, routed by family, one model at a time | Layering; Handshake; Engine channel; `/models`; job registry |
-| A10 engine `fatal` + lazy mflux environment | Events 5; `/models` mflux state |
+| A10 models added by hand (client descriptor) | Model catalog: `/models` descriptor; Models added by hand |
+| A11 engine `fatal` + lazy mflux environment | Events 5; `/models` mflux state |

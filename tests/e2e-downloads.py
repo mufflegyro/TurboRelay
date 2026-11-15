@@ -237,6 +237,7 @@ def main() -> None:
                             json.dumps(descriptor).encode())
         check("a custom model downloads from its descriptor", status == 200, f"{status} {body[:150]}")
         custom_state = None
+        entry = None
         for _ in range(40):
             models = json.loads(http("GET", port, "/models", "ef" * 32)[1])["models"]
             entry = next((m for m in models if m["id"] == custom_id), None)
@@ -246,6 +247,11 @@ def main() -> None:
                     break
             time.sleep(0.25)
         check("the custom model is listed and downloaded", custom_state == "downloaded", str(custom_state))
+        echo = (entry or {}).get("descriptor")
+        check("a custom model's descriptor travels in /models",
+              isinstance(echo, dict) and echo.get("family") == "moss-image"
+              and echo.get("source", {}).get("huggingFace", {}).get("repo") == custom_id,
+              str(echo))
 
         # Happy path: download the z-image model, watch progress events.
         encoded = urllib.parse.quote(z_id, safe="")

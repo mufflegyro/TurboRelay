@@ -143,6 +143,12 @@ public final class DownloadManager: @unchecked Sendable {
             if entry.familyHasQualityFiles {
                 view["quality_state"] = qualityStates[descriptor.id] ?? "not-downloaded"
             }
+            // The full descriptor lets a client that does not have this model in its own
+            // catalog list and run it (a model added by hand on the relay, A10).
+            if let data = try? JSONEncoder().encode(descriptor),
+               let object = try? JSONSerialization.jsonObject(with: data) {
+                view["descriptor"] = object
+            }
             return view
         }
     }

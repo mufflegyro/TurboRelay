@@ -53,6 +53,7 @@ Everything lives in `$TURBORELAY_HOME` (default
 | `config.json` | `port` (7700), `token` (the pairing token, generated at first launch), `engine_path`, `model_root`, `mflux_python` (empty = the lazy venv; set it to use an existing Python), `mflux_worker` (empty = the bundled `worker.py`), `mflux_requirements` (empty = the bundled `requirements.txt`) |
 | `staging/results/` | Finished jobs, streamed to clients via `GET /files/{file_id}` (last 20 kept) |
 | `staging/uploads/<aa>/<sha256>` | Content-addressed uploads (reference images, last frames, LoRAs) |
+| `custom-models.json` | Descriptors of models added by hand (A10); each `/models` entry carries its descriptor, so every client lists it |
 
 The menu bar shows the port, engine state, connected clients and the model in memory,
 and can copy the pairing token — the client pastes it into Turbo MLX's remote-backend
@@ -76,12 +77,14 @@ settings.
   cleared between jobs, suite green against fake mflux/MLX. The relay routes those families
   to it (`EngineRouter`), keeps one model resident by stopping the other engine on a switch,
   and reports `engine` on `/models`, `/jobs` and `done`. The catalog carries the three
-  verified mflux models. The client shows the native/mflux badge and offers the families
-  only in remote mode. On the first mflux job the relay installs its venv with `uv` (Python
-  3.13 + mflux 0.24.0 + MLX, ~1.1 GB); the menu says "mflux not installed" until then, and
-  `/models` reports `missing`/`installing`/`installed`/`failed`. The worker's `fatal` event
-  stops a broken install from crash-looping. The real Krea/Qwen renders are the user's run
-  on the relay Mac (`docs/two-mac-checklist.md`), as with every real-model check.
+  verified mflux models, and every `/models` entry carries its full descriptor, so a model
+  added by hand on the relay is listed and usable by every client. The client shows the
+  native/mflux badge and offers the families only in remote mode. On the first mflux job the
+  relay installs its venv with `uv` (Python 3.13 + mflux 0.24.0 + MLX, ~1.1 GB); the menu says
+  "mflux not installed" until then, and `/models` reports
+  `missing`/`installing`/`installed`/`failed`. The worker's `fatal` event stops a broken
+  install from crash-looping. The real Krea/Qwen renders are the user's run on the relay Mac
+  (`docs/two-mac-checklist.md`), as with every real-model check.
 
 Failure paths are covered too: engine crash mid-job fails the running job and restarts the
 engine (M2 e2e), and a disconnect mid-job reconnects on its own and delivers the finished

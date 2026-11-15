@@ -252,6 +252,8 @@ def main() -> None:
         check("GET /models lists the server catalog", status == 200 and len(catalog) >= 17, str(status))
         check("every /models entry names its engine (turbo or mflux)",
               catalog and all(entry.get("engine") in ("turbo", "mflux") for entry in catalog))
+        check("every /models entry carries its full descriptor",
+              catalog and all(isinstance(entry.get("descriptor"), dict) for entry in catalog))
         mflux_entries = [entry for entry in catalog if entry.get("engine") == "mflux"]
         check("the catalog carries the three mflux models",
               {entry["family"] for entry in mflux_entries} == {"krea-2", "qwen-image-2.1"} and len(mflux_entries) == 3,
