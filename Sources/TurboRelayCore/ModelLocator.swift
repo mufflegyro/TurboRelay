@@ -68,6 +68,11 @@ public struct ModelLocator {
     /// here has no other completeness signal.
     func complete(of id: String, family: ModelFamily, revision: String? = nil) -> Bool {
         guard let snapshot = resolve(id, revision: revision) else { return false }
+        // A family whose text encoder is a companion checkpoint is not usable without it, as
+        // the client's installedLocation has it. The picker then offers Download rather than
+        // Ready, and since a download fetches only missing files, that backfills the companion
+        // without re-fetching the weights.
+        if family.companion != nil, companionLocation(of: family) == nil { return false }
         let fm = FileManager.default
         guard Self.hasFiles(family.requiredFiles, in: snapshot) else { return false }
         if let tokenizer = family.tokenizerFile,
