@@ -318,6 +318,15 @@ public final class RelayService: @unchecked Sendable {
             uploadProbe(request, respond: respond)
         case ("PUT", let path) where path.hasPrefix("/upload/"):
             uploadPut(request, hex: String(path.dropFirst("/upload/".count)), respond: respond)
+        case ("GET", "/loras"):
+            respond(.json(["loras": bridge.loraLibrary.view()]))
+        case ("GET", let path) where path.hasPrefix("/loras/"):
+            let id = String(path.dropFirst("/loras/".count)).removingPercentEncoding ?? ""
+            guard let url = bridge.loraLibrary.fileURL(id) else {
+                respond(.error(404, "no such LoRA in the relay's library"))
+                return
+            }
+            respond(.streamedFile(url, mediaType: "application/octet-stream"))
         case ("GET", let path) where path.hasPrefix("/files/"):
             fetchFile(String(path.dropFirst("/files/".count)), bridge: bridge, respond: respond)
         default:

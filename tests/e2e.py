@@ -339,6 +339,22 @@ def main() -> None:
         ok, detail = is_valid_png(payload)
         check("the fetched result is a valid PNG", ok, detail)
 
+        # The LoRA the job uploaded is kept in the relay's library for another client to import
+        # (GET /loras); the file streams back byte-for-byte.
+        status, body = http("GET", port, "/loras")
+        loras = json.loads(body).get("loras", []) if status == 200 else []
+        entry = next((l for l in loras if l.get("id") == lora_hex), None)
+        check("GET /loras lists the LoRA the job used",
+              status == 200 and entry is not None and entry.get("bytes") == len(lora_bytes),
+              f"{status} {body[:200]}")
+        check("the listed LoRA keeps a .safetensors name",
+              entry is not None and entry.get("name", "").endswith(".safetensors"), str(entry))
+        status, payload = http("GET", port, f"/loras/{lora_hex}")
+        check("GET /loras/{id} streams the LoRA bytes", status == 200 and payload == lora_bytes,
+              f"{status} {len(payload)} bytes")
+        status, _ = http("GET", port, "/loras/" + "00" * 32)
+        check("an unknown LoRA is refused", status == 404)
+
         status, body = http("GET", port, "/jobs")
         jobs = json.loads(body)["jobs"]
         match = [j for j in jobs if j["id"] == job_id]

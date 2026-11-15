@@ -20,6 +20,15 @@ public struct HTTPResponse {
     public let status: Int
     public let headers: [String: String]
     public let body: Data
+    /// A file streamed in chunks instead of held in `body` (LoRA imports can be gigabytes).
+    public let fileURL: URL?
+
+    public init(status: Int, headers: [String: String], body: Data, fileURL: URL? = nil) {
+        self.status = status
+        self.headers = headers
+        self.body = body
+        self.fileURL = fileURL
+    }
 
     public static func json(_ object: [String: Any], status: Int = 200) -> HTTPResponse {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])) ?? Data("{}".utf8)
@@ -32,6 +41,12 @@ public struct HTTPResponse {
 
     public static func file(_ data: Data, mediaType: String) -> HTTPResponse {
         HTTPResponse(status: 200, headers: ["Content-Type": mediaType], body: data)
+    }
+
+    /// Streams `url` after the headers: one chunk at a time, so a multi-gigabyte LoRA never has
+    /// to sit in the relay's memory.
+    public static func streamedFile(_ url: URL, mediaType: String) -> HTTPResponse {
+        HTTPResponse(status: 200, headers: ["Content-Type": mediaType], body: Data(), fileURL: url)
     }
 
     static func phrase(_ status: Int) -> String {
@@ -361,14 +376,59 @@ private final class ConnectionHandler {
         var head = "HTTP/1.1 \(response.status) \(HTTPResponse.phrase(response.status))\r\n"
         var headers = response.headers
         if headers["Content-Type"] == nil { headers["Content-Type"] = "application/json" }
-        headers["Content-Length"] = String(response.body.count)
+        let contentLength = response.fileURL.flatMap {
+            (try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        } ?? response.body.count
+        headers["Content-Length"] = String(contentLength)
         headers["Connection"] = "close"
         for (key, value) in headers.sorted(by: { $0.key < $1.key }) {
             head += "\(key): \(value)\r\n"
         }
         head += "\r\n"
+        if let fileURL = response.fileURL {
+            connection.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if error != nil {
+                    self.connection.cancel()
+                    return
+                }
+                self.stream(fileURL)
+            })
+            return
+        }
         connection.send(content: Data(head.utf8) + response.body, completion: .contentProcessed { [weak self] _ in
             self?.connection.cancel()
+        })
+    }
+
+    /// Sends a file in 1 MiB chunks, each waiting for the previous one to be handed off, so a
+    /// 7 GB LoRA costs one chunk of memory and the connection drains at its own pace.
+    private func stream(_ url: URL) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            connection.cancel()
+            return
+        }
+        stream(handle)
+    }
+
+    private func stream(_ handle: FileHandle) {
+        let chunk = (try? handle.read(upToCount: 1 << 20)) ?? Data()
+        if chunk.isEmpty {
+            try? handle.close()
+            connection.cancel()
+            return
+        }
+        connection.send(content: chunk, completion: .contentProcessed { [weak self] error in
+            guard let self else {
+                try? handle.close()
+                return
+            }
+            if error != nil {
+                try? handle.close()
+                self.connection.cancel()
+                return
+            }
+            self.stream(handle)
         })
     }
 

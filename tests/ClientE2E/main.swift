@@ -113,6 +113,17 @@ for name in ["config.json", "tokenizer.json",
     try? Data("gemma fixture".utf8).write(to: gemmaSnapshot.appendingPathComponent(name))
 }
 
+let source = serverHome.appendingPathComponent("lora-source.safetensors")
+// Larger than the stream's 1 MiB chunks, so the chunked response is exercised end to end.
+let loraBytes = Data(repeating: 0x5A, count: 3 << 20)
+try? loraBytes.write(to: source)
+let loraID = String(repeating: "ab", count: 32)
+let stagingLoras = serverHome.appendingPathComponent("staging/loras", isDirectory: true)
+try? FileManager.default.createDirectory(at: stagingLoras, withIntermediateDirectories: true)
+try? FileManager.default.createSymbolicLink(
+    at: stagingLoras.appendingPathComponent("\(loraID)-Test LoRA.safetensors"),
+    withDestinationURL: source)
+
 let port: UInt16 = UInt16(freePort())
 let serverConfig: [String: Any] = [
     "port": Int(port), "token": token, "engine_path": stubPath,
@@ -190,6 +201,39 @@ check("a Quality request for a model without Quality files fails readably",
       waitFor({ client.qualityStates[zID]?.state == "failed"
                 && (client.qualityStates[zID]?.message ?? "").contains("no Quality mode") }, timeout: 10),
       String(describing: client.qualityStates[zID]))
+
+// The relay's LoRA library (GET /loras): a file a client used and the relay kept, backfilled
+// from staging/loras at startup, streamed to disk for import. Removing the staging symlink and
+// its source proves the library hardlink is independent of the upload.
+try? FileManager.default.removeItem(at: stagingLoras.appendingPathComponent("\(loraID)-Test LoRA.safetensors"))
+try? FileManager.default.removeItem(at: source)
+var remoteLoRAs: [RemoteBackend.RemoteLoRA] = []
+var remoteLoRAError = ""
+let lorasDone = DispatchSemaphore(value: 0)
+Task {
+    do { remoteLoRAs = try await client.fetchLoRAs() } catch { remoteLoRAError = "\(error)" }
+    lorasDone.signal()
+}
+lorasDone.wait()
+let libraryLoRA = remoteLoRAs.first { $0.id == loraID }
+check("fetchLoRAs lists the relay's library",
+      libraryLoRA?.name == "Test LoRA.safetensors" && libraryLoRA?.bytes == Int64(loraBytes.count),
+      "\(remoteLoRAs) \(remoteLoRAError)")
+if let lora = libraryLoRA {
+    var downloaded: URL?
+    var downloadError = ""
+    let downloadDone = DispatchSemaphore(value: 0)
+    Task {
+        do { downloaded = try await client.downloadLoRA(lora) } catch { downloadError = "\(error)" }
+        downloadDone.signal()
+    }
+    downloadDone.wait()
+    check("downloadLoRA streams the file to disk",
+          downloaded.flatMap { try? Data(contentsOf: $0) } == loraBytes, downloadError)
+    if let folder = downloaded?.deletingLastPathComponent() {
+        try? FileManager.default.removeItem(at: folder)
+    }
+}
 
 // Generate with a reference image: the request names it by its references-folder name, the
 // transport uploads it and the command goes out with a handle (A1).

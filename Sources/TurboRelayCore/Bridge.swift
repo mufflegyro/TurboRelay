@@ -56,6 +56,8 @@ public final class Bridge: @unchecked Sendable {
     private let resultsLimit = 20
 
     public let router: EngineRouter
+    /// The LoRAs clients have used, for another client to import (GET /loras).
+    public let loraLibrary: LoRARegistry
     private let locator: ModelLocator
     private let home: URL
     /// Set by the service: sends a wire line to every connected client.
@@ -71,6 +73,7 @@ public final class Bridge: @unchecked Sendable {
         self.home = home
         self.locator = ModelLocator(hub: modelRoot)
         self.router = router
+        self.loraLibrary = LoRARegistry(home: home)
         router.onEvent = { [weak self] engine, line in self?.engineEvent(engine, line) }
         router.onLog = { [weak self] engine, line in self?.engineLog(engine, line) }
         router.onExit = { [weak self] engine, intentional in
@@ -394,6 +397,9 @@ public final class Bridge: @unchecked Sendable {
                 // client sends the original filename; we symlink the staged blob to it.
                 let name = (lora["name"] as? String) ?? (hex + ".safetensors")
                 let staged = stageLora(hex: hex, name: name, uploadPath: uploadPath)
+                loraLibrary.register(id: hex, name: name,
+                                     family: family.isEmpty ? nil : family,
+                                     upload: URL(fileURLWithPath: uploadPath))
                 translated.append(["path": staged, "scale": lora["scale"] ?? 1])
             }
             params["loras"] = translated

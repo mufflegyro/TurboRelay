@@ -58,6 +58,8 @@ Everything not amended here behaves exactly as it does over the pipe.
 | `/models/{id}/download` | POST | Start downloading a catalog model, or a model added by hand (M3) |
 | `/models/{id}/download/quality` | POST | Download only LTX's Quality-mode files, on top of a model that is already there (M4) |
 | `/models/{id}/download/cancel` | POST | Cancel that download (M3) |
+| `/loras` | GET | LoRAs the relay has kept from jobs, for another client to import |
+| `/loras/{sha256}` | GET | One kept LoRA, streamed as `application/octet-stream` |
 
 `protocol_version` starts at **1**. A client that does not speak the server's
 version refuses to connect, naming both versions.
@@ -309,6 +311,38 @@ A model whose family keeps its text encoder in a companion checkpoint
 too: the client's picker offers Download otherwise, and a download fetches
 only the files that are missing. The bridge adds the resolved companion path
 to the engine command (A2); the client never sends it.
+
+**LoRAs across clients.** A LoRA travels to the relay as a content-addressed
+upload (A1), and the bridge keeps every one a job used: the bytes are
+hardlinked under `loras/<sha256>.safetensors` in the relay home, so the
+library entry outlives the staging upload's eviction. `GET /loras` lists
+them:
+
+```json
+{"loras": [
+  {"id": "<sha256>", "name": "adapter.safetensors", "bytes": 2740000000,
+   "family": "ltx-2", "added_at": 1794770000}
+]}
+```
+
+`family` is the model family of the first job that used it (a hint; the
+client reads the file's own keys when it imports it). `GET /loras/{id}`
+streams the `.safetensors` file in chunks — never through the server's
+memory, since adapters reach several gigabytes. The library is read-only:
+there is no delete or rename endpoint, and it grows with the distinct
+adapters used (deduplicated by sha256, so the same file used again costs
+nothing).
+
+Before this library existed, a job's LoRA lived only in
+`staging/loras/<sha256>-<name>.safetensors` as a symlink to its upload. At
+startup the relay adopts those while the upload still exists, so a recent
+job's LoRA is listed without running it again; an upload already swept is
+not recoverable. On a client, the LoRA menu's **Import from the Render
+Mac…** reads `GET /loras`, downloads the chosen file to a temporary file,
+and adds it to the local `LoRALibrary`; the file then behaves like any
+LoRA added by hand, and selecting it is left to the user. The upload is
+deduplicated, so importing on a second Mac does not store the bytes twice
+on the relay.
 
 **Models added by hand (A10).** The built-in catalog is not the whole story:
 the client can add any Hugging Face repository as a custom model. Those are
