@@ -289,6 +289,70 @@ def main() -> None:
         link = next(p for p in links if p.is_symlink() and p.name == "model.safetensors")
         check("snapshot symlinks resolve into blobs", link.resolve() == main_blob.resolve())
 
+        # Quality mode (M4 remote), against the model this was reported on: LTX-2.3. Its dev
+        # transformer downloads on top of a model that is already there (with its Gemma 3 12B
+        # text encoder companion); its events are tagged `quality`, so the client can track
+        # them beside the model's own state, and the model must stay "downloaded" throughout.
+        ltx_id = "dgrauet/ltx-2.3-mlx-q4"
+        gemma_id = "mlx-community/gemma-3-12b-it-4bit"
+        MockHub.repos[ltx_id] = make_repo([
+            ("README.md", 120),
+            ("transformer-distilled-1.1.safetensors", 2_000_000),
+            ("transformer-dev.safetensors", 1_200_000),
+        ])
+        MockHub.repos[gemma_id] = make_repo([
+            ("config.json", 100), ("tokenizer.json", 200), ("tokenizer.model", 300),
+            ("model-00001-of-00002.safetensors", 400_000),
+            ("model-00002-of-00002.safetensors", 400_000),
+        ])
+        encoded_ltx = urllib.parse.quote(ltx_id, safe="")
+        http("POST", port, f"/models/{encoded_ltx}/download", "ef" * 32)
+        base_done = None
+        deadline = time.time() + 30
+        while base_done is None and time.time() < deadline:
+            event = ws.recv_event(timeout=5)
+            if event is None:
+                break
+            if (event.get("event") == "model_download" and event.get("model_id") == ltx_id
+                    and not event.get("quality") and event.get("status") == "downloaded"):
+                base_done = event
+        check("the LTX-2.3 model downloads before its Quality files", base_done is not None, str(base_done))
+        gemma_snapshot = (home / "hfhub" / "models--mlx-community--gemma-3-12b-it-4bit" / "snapshots"
+                          / "86cc6a8dedbc456dd0e4af01a9d09f396f77e558")
+        check("LTX-2.3's Gemma text encoder arrives with the model",
+              (gemma_snapshot / "config.json").exists()
+              and (gemma_snapshot / "model-00001-of-00002.safetensors").exists(),
+              str(gemma_snapshot))
+
+        status, body = http("POST", port, f"/models/{encoded_ltx}/download/quality", "ef" * 32)
+        check("a Quality download is accepted",
+              status == 200 and json.loads(body).get("quality") is True, f"{status} {body[:150]}")
+        quality_events, quality_done = [], None
+        deadline = time.time() + 30
+        while quality_done is None and time.time() < deadline:
+            event = ws.recv_event(timeout=5)
+            if event is None:
+                break
+            if (event.get("event") == "model_download" and event.get("model_id") == ltx_id
+                    and event.get("quality")):
+                quality_events.append(event)
+                if event.get("status") == "downloaded":
+                    quality_done = event
+        check("Quality progress is tagged and finishes",
+              quality_done is not None and any(e.get("status") == "downloading" for e in quality_events),
+              str(quality_events[:3]))
+        ltx_entry = next(m for m in json.loads(http("GET", port, "/models", "ef" * 32)[1])["models"]
+                         if m["id"] == ltx_id)
+        check("Quality files report downloaded beside an unchanged model",
+              ltx_entry.get("quality_state") == "downloaded" and ltx_entry.get("state") == "downloaded",
+              str(ltx_entry))
+
+        # Asking again is answered, not left waiting: the files are already on disk, and the
+        # client (which may not have refreshed /models yet) must settle on "downloaded".
+        status, body = http("POST", port, f"/models/{encoded_ltx}/download/quality", "ef" * 32)
+        check("a second Quality request answers already, without starting a download",
+              status == 200 and json.loads(body).get("already") is True, f"{status} {body[:150]}")
+
         # Gated repository: a readable refusal, not a stack trace.
         encoded = urllib.parse.quote(gated_id, safe="")
         http("POST", port, f"/models/{encoded}/download", "ef" * 32)

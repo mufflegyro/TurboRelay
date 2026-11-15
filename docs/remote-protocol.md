@@ -56,6 +56,7 @@ Everything not amended here behaves exactly as it does over the pipe.
 | `/log` | GET | The server's ring buffer of engine + relay log lines |
 | `/models` | GET | Model catalog with per-model server-side download state |
 | `/models/{id}/download` | POST | Start downloading a catalog model, or a model added by hand (M3) |
+| `/models/{id}/download/quality` | POST | Download only LTX's Quality-mode files, on top of a model that is already there (M4) |
 | `/models/{id}/download/cancel` | POST | Cancel that download (M3) |
 
 `protocol_version` starts at **1**. A client that does not speak the server's
@@ -289,6 +290,25 @@ than inheriting it (A8).
 Remote mode's client model picker reads this endpoint; the Download action
 routes here instead of the local `DownloadCenter`; availability is judged
 against the server's RAM and disk, not the client's.
+
+**Quality mode (LTX-2.x).** LTX's Quality mode reads the pack's dev
+transformer (`transformer-dev.safetensors`, about 11–21 GB) instead of the
+distilled one. It is not part of the model's `download_patterns`, so it is
+fetched on its own: `POST /models/{id}/download/quality` starts it, and
+`GET /models` reports `quality_state` beside `state` for the families that
+have those files (`not-downloaded | downloading | downloaded | failed`).
+A Quality request needs the model itself downloaded first. Its progress and
+outcome arrive as `model_download` events tagged `"quality": true`; the
+client tracks them separately, so a Quality download never marks the model
+itself as downloading or, after it, leave it stuck in that state. Asking
+again when the files are already on disk answers `{"started": true,
+"already": true}` and starts nothing — there is no event to wait for.
+
+A model whose family keeps its text encoder in a companion checkpoint
+(LTX-2.3's Gemma 3 12B) is only `downloaded` when that companion is there
+too: the client's picker offers Download otherwise, and a download fetches
+only the files that are missing. The bridge adds the resolved companion path
+to the engine command (A2); the client never sends it.
 
 **Models added by hand (A10).** The built-in catalog is not the whole story:
 the client can add any Hugging Face repository as a custom model. Those are

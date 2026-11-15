@@ -37,8 +37,9 @@ public final class DownloadManager: @unchecked Sendable {
     private let token: String?
     /// Where descriptors of client-added (non-built-in) models are kept across restarts.
     private let customStore: URL?
-    /// Set by the service: every state change and progress tick lands on the wire.
-    public var onEvent: ((_ modelID: String, _ status: String, _ bytes: Int64, _ total: Int64, _ message: String?) -> Void)?
+    /// Every state change and progress tick lands on the wire, tagged with whether it belongs
+    /// to the Quality mode's files (LTX-2's dev transformer) rather than the model itself.
+    public var onEvent: ((_ modelID: String, _ status: String, _ bytes: Int64, _ total: Int64, _ message: String?, _ quality: Bool) -> Void)?
     public var onChange: (() -> Void)?
 
     /// Injected for tests; nil in production (the volume's real free space decides).
@@ -71,6 +72,7 @@ public final class DownloadManager: @unchecked Sendable {
             if locator.complete(of: descriptor.id, family: descriptor.family, revision: descriptor.revision ?? "main") {
                 entries[descriptor.id]?.state = .downloaded
             }
+            seedQualityState(for: descriptor)
         }
     }
 
@@ -87,9 +89,22 @@ public final class DownloadManager: @unchecked Sendable {
                                 revision: descriptor.revision ?? "main") {
                 entries[descriptor.id]?.state = .downloaded
             }
+            seedQualityState(for: descriptor)
             Self.saveCustom(customStore, descriptors: entries.values.filter { !$0.descriptor.isBuiltIn }.map(\.descriptor))
         }
         return descriptor.id
+    }
+
+    /// The Quality mode's files are not part of the model's completeness check (they download
+    /// later), and their state lives in memory only: a relay restarted after a Quality download
+    /// must still report the files it already has on disk.
+    private func seedQualityState(for descriptor: ModelDescriptor) {
+        guard !descriptor.family.qualityFiles.isEmpty,
+              let snapshot = locator.resolve(descriptor.id, revision: descriptor.revision ?? "main") else { return }
+        let exists = descriptor.family.qualityFiles.allSatisfy {
+            FileManager.default.fileExists(atPath: snapshot.appendingPathComponent($0).path)
+        }
+        if exists { qualityStates[descriptor.id] = "downloaded" }
     }
 
     // MARK: Custom descriptors (client-added models)
@@ -157,6 +172,14 @@ public final class DownloadManager: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries[id]?.state ?? .notDownloaded
+    }
+
+    /// The Quality mode's files' state ("not-downloaded", "downloading", "downloaded",
+    /// "failed"), for a request that found nothing left to fetch.
+    public func qualityState(_ id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return qualityStates[id]
     }
 
     public func isDownloaded(_ id: String) -> Bool {
@@ -293,29 +316,20 @@ public final class DownloadManager: @unchecked Sendable {
             let listing = try await downloader.list(matching: descriptor.family.qualityFiles)
             try checkDiskSpace(missing: downloader.bytesMissing(from: listing))
             qualityStates[id] = "downloading"
-            onEvent?(id, "downloading", 0, listing.totalBytes, nil)
+            onEvent?(id, "downloading", 0, listing.totalBytes, nil, true)
             onChange?()
             _ = try await downloader.download(listing) { [weak self] bytes in
-                self?.report(id, bytes, listing.totalBytes)
+                self?.report(id, bytes, listing.totalBytes, quality: true)
             }
-            lock.lock()
-            qualityStates[id] = "downloaded"
-            lock.unlock()
-            onEvent?(id, "downloaded", listing.totalBytes, listing.totalBytes, nil)
-            onChange?()
+            finishQuality(id, total: listing.totalBytes)
         } catch is CancellationError {
-            qualityStates[id] = "not-downloaded"
-            onEvent?(id, "cancelled", 0, 0, nil)
-            onChange?()
+            endQuality(id, state: "not-downloaded", status: "cancelled", message: nil)
         } catch {
             if Task.isCancelled {
-                qualityStates[id] = "not-downloaded"
-                onEvent?(id, "cancelled", 0, 0, nil)
+                endQuality(id, state: "not-downloaded", status: "cancelled", message: nil)
             } else {
-                qualityStates[id] = "failed"
-                onEvent?(id, "failed", 0, 0, error.localizedDescription)
+                endQuality(id, state: "failed", status: "failed", message: error.localizedDescription)
             }
-            onChange?()
         }
         keepAwake.isOn = false
     }
@@ -342,7 +356,7 @@ public final class DownloadManager: @unchecked Sendable {
         runningTask = nil
         lock.unlock()
         keepAwake.isOn = false
-        onEvent?(id, "cancelled", 0, 0, nil)
+        onEvent?(id, "cancelled", 0, 0, nil, false)
         onChange?()
     }
 
@@ -353,7 +367,7 @@ public final class DownloadManager: @unchecked Sendable {
         runningTask = nil
         lock.unlock()
         keepAwake.isOn = false
-        onEvent?(id, "failed", 0, 0, message)
+        onEvent?(id, "failed", 0, 0, message, false)
         onChange?()
     }
 
@@ -364,7 +378,30 @@ public final class DownloadManager: @unchecked Sendable {
         runningTask = nil
         lock.unlock()
         keepAwake.isOn = false
-        onEvent?(id, "failed", 0, 0, message)
+        onEvent?(id, "failed", 0, 0, message, true)
+        onChange?()
+    }
+
+    /// A Quality files download ended: unlike the base model's state, the Quality state is a
+    /// word, and the shared run slot must be released or the next download is refused.
+    private func endQuality(_ id: String, state: String, status: String, message: String?) {
+        lock.lock()
+        qualityStates[id] = state
+        runningID = nil
+        runningTask = nil
+        lock.unlock()
+        onEvent?(id, status, 0, 0, message, true)
+        onChange?()
+    }
+
+    private func finishQuality(_ id: String, total: Int64) {
+        lock.lock()
+        qualityStates[id] = "downloaded"
+        runningID = nil
+        runningTask = nil
+        lock.unlock()
+        keepAwake.isOn = false
+        onEvent?(id, "downloaded", total, total, nil, true)
         onChange?()
     }
 
@@ -375,15 +412,23 @@ public final class DownloadManager: @unchecked Sendable {
         runningTask = nil
         lock.unlock()
         keepAwake.isOn = false
-        onEvent?(id, status, total, total, nil)
+        onEvent?(id, status, total, total, nil, false)
         onChange?()
     }
 
-    private func report(_ id: String, _ bytes: Int64, _ total: Int64) {
-        lock.lock()
-        entries[id]?.state = .downloading(bytes: bytes, total: total)
-        lock.unlock()
-        onEvent?(id, "downloading", bytes, total, nil)
+    private func report(_ id: String, _ bytes: Int64, _ total: Int64, quality: Bool = false) {
+        if quality {
+            // The Quality files are not the model's own state: touching `entries` here would
+            // leave the base model marked "downloading" forever after they finish.
+            lock.lock()
+            qualityStates[id] = "downloading"
+            lock.unlock()
+        } else {
+            lock.lock()
+            entries[id]?.state = .downloading(bytes: bytes, total: total)
+            lock.unlock()
+        }
+        onEvent?(id, "downloading", bytes, total, nil, quality)
         onChange?()
     }
 

@@ -87,12 +87,15 @@ public final class RelayService: @unchecked Sendable {
             token: config.resolvedHFToken,
             customStore: home.appendingPathComponent("custom-models.json")
         )
-        downloads.onEvent = { [weak self] modelID, status, bytes, total, message in
+        downloads.onEvent = { [weak self] modelID, status, bytes, total, message, quality in
             guard let self else { return }
             var event: [String: Any] = [
                 "event": "model_download", "model_id": modelID, "status": status,
                 "bytes": Int(bytes), "total": Int(total),
             ]
+            // The client tracks the Quality mode's files beside the model's own state, so a
+            // progress or done event must say which of the two it belongs to.
+            if quality { event["quality"] = true }
             if let message { event["message"] = message }
             guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.withoutEscapingSlashes]) else { return }
             self.server?.broadcast(String(decoding: data, as: UTF8.self))
@@ -291,7 +294,11 @@ public final class RelayService: @unchecked Sendable {
             if let problem = downloads?.start(qualityID, quality: true) {
                 respond(.error(409, problem))
             } else {
-                respond(.json(["started": true, "id": qualityID, "quality": true]))
+                var payload: [String: Any] = ["started": true, "id": qualityID, "quality": true]
+                // Nothing to do because the files are already on disk (the client may not have
+                // refreshed /models yet): say so, or it would wait for an event that never comes.
+                if downloads?.qualityState(qualityID) == "downloaded" { payload["already"] = true }
+                respond(.json(payload))
             }
         case ("POST", let path) where path.hasPrefix("/models/") && path.hasSuffix("/download"):
             let id = String(path.dropFirst("/models/".count).dropLast("/download".count)).removingPercentEncoding ?? ""

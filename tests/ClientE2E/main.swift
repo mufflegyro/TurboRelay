@@ -90,6 +90,29 @@ let hub = serverHome
 try? FileManager.default.createDirectory(at: hub, withIntermediateDirectories: true)
 try? Data("stub checkpoint".utf8).write(to: hub.appendingPathComponent("model.safetensors"))
 
+// LTX-2.3, the model the Quality path was reported on: a complete-looking pack (the quality
+// transformer included) with its Gemma 3 12B text encoder, so /models reports the model and
+// its Quality files as downloaded without a network download.
+let ltxID = "dgrauet/ltx-2.3-mlx-q4"
+let ltxSnapshot = serverHome.appendingPathComponent(
+    "hfhub/models--dgrauet--ltx-2.3-mlx-q4/snapshots/56a5866d638ecfe37c54d348e88938235185c2d4",
+    isDirectory: true)
+try? FileManager.default.createDirectory(at: ltxSnapshot, withIntermediateDirectories: true)
+for name in ["embedded_config.json", "transformer-distilled-1.1.safetensors", "connector.safetensors",
+             "vae_decoder.safetensors", "vae_encoder.safetensors", "audio_vae.safetensors",
+             "vocoder.safetensors", "spatial_upscaler_x2_v1_1.safetensors",
+             "transformer-dev.safetensors"] {
+    try? Data("ltx fixture".utf8).write(to: ltxSnapshot.appendingPathComponent(name))
+}
+let gemmaSnapshot = serverHome.appendingPathComponent(
+    "hfhub/models--mlx-community--gemma-3-12b-it-4bit/snapshots/86cc6a8dedbc456dd0e4af01a9d09f396f77e558",
+    isDirectory: true)
+try? FileManager.default.createDirectory(at: gemmaSnapshot, withIntermediateDirectories: true)
+for name in ["config.json", "tokenizer.json",
+             "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"] {
+    try? Data("gemma fixture".utf8).write(to: gemmaSnapshot.appendingPathComponent(name))
+}
+
 let port: UInt16 = UInt16(freePort())
 let serverConfig: [String: Any] = [
     "port": Int(port), "token": token, "engine_path": stubPath,
@@ -152,6 +175,21 @@ catalogDone.wait()
 check("fetchModels lists the catalog", modelCount >= 14, catalogError)
 check("fetchModels seeds the picker's per-model states (M3)", !client.modelStates.isEmpty,
       "\(client.modelStates.count) states")
+check("LTX-2.3 reports its Quality files as downloaded (seeded from /models quality_state)",
+      client.qualityStates[ltxID]?.state == "downloaded",
+      String(describing: client.qualityStates[ltxID]))
+
+// The Quality request goes to its own route: a model without Quality files is refused with
+// the server's reason, which the client stores for the Quality row to show.
+guard let qualityless = ModelCatalog.builtIn.first(where: { $0.id == zID }) else {
+    print("the catalog has no \(zID)")
+    exit(1)
+}
+try? client.downloadQuality(qualityless)
+check("a Quality request for a model without Quality files fails readably",
+      waitFor({ client.qualityStates[zID]?.state == "failed"
+                && (client.qualityStates[zID]?.message ?? "").contains("no Quality mode") }, timeout: 10),
+      String(describing: client.qualityStates[zID]))
 
 // Generate with a reference image: the request names it by its references-folder name, the
 // transport uploads it and the command goes out with a handle (A1).
