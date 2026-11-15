@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -480,6 +481,27 @@ def main() -> None:
                          "model/gltf-binary": lambda d: d[:4] == b"glTF"}[media_type]
                 check(f"{family} payload is a real container", status == 200 and magic(payload),
                       f"status {status}, first bytes: {payload[:60]!r}")
+
+        # The companion is not optional (A2): with no text encoder on disk the job fails with
+        # the reason and the fix, instead of an engine error the user cannot act on.
+        shutil.rmtree(gemma)
+        no_encoder_job = "e2e5555-5555-4555-8555-555555555555"
+        ws.send_text(json.dumps({"cmd": "generate", "id": no_encoder_job, "model": {
+            "family": "ltx-2", "name": "mflux-community/z-image-turbo-mflux-q4"
+        }, "params": {"prompt": "a thing", "seed": 9, "width": 512, "height": 512,
+                      "steps": 2, "guidance": 1}}))
+        missing_encoder = None
+        deadline = time.time() + 10
+        while missing_encoder is None and time.time() < deadline:
+            message = ws.recv_message()
+            if message is None:
+                break
+            event = json.loads(message)
+            if event.get("event") == "failed" and event.get("id") == no_encoder_job:
+                missing_encoder = event
+        check("an LTX-2 job without its text encoder fails readably",
+              missing_encoder is not None and "text encoder" in missing_encoder.get("message", ""),
+              str(missing_encoder))
 
         # Engine crash mid-job (#1): kill the stub while a generation runs; the bridge must
         # fail the job loudly and the supervisor must bring the engine back.
