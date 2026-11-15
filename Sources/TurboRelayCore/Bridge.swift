@@ -330,6 +330,16 @@ public final class Bridge: @unchecked Sendable {
             return
         }
         model["path"] = resolved.path
+        // A family that keeps its text encoder beside the checkpoint (LTX-2.3's Gemma 3 12B):
+        // the client sends no path (A2), and the download brought the companion into this same
+        // cache, so the bridge hands the engine its snapshot.
+        if let family = ModelFamily(rawValue: family), let companion = family.companion {
+            guard let companionPath = locator.companionLocation(of: family) else {
+                fail(jobID: jobID, message: "\(family.displayName) needs its text encoder (\(companion.name)), which is not on the render Mac. Download \(name) again in Models so its companion comes with it, or check that the cache holds \(companion.repo).")
+                return
+            }
+            model["text_encoder_path"] = companionPath.path
+        }
 
         // The upload handles the client sent (A1), from the original command: each is
         // retained for this job and released when the job ends.
@@ -464,6 +474,15 @@ public final class Bridge: @unchecked Sendable {
             return
         }
         model["path"] = resolved.path
+        // The same companion path the generate command needs, for a preload: without the text
+        // encoder the engine cannot load LTX-2.3 at all.
+        if let family = ModelFamily(rawValue: family), let companion = family.companion {
+            guard let companionPath = locator.companionLocation(of: family) else {
+                sendLog("\(family.displayName) needs its text encoder (\(companion.name)), which is not on the render Mac; download \(name) again in Models so its companion comes with it.")
+                return
+            }
+            model["text_encoder_path"] = companionPath.path
+        }
         guard var command = deepCopy(object) as? [String: Any] else { return }
         command["model"] = model
         lock.lock()

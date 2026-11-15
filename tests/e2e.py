@@ -192,6 +192,16 @@ def main() -> None:
     qwen_model = model_root / "models--mflux-community--qwen-image-2-1-mflux-q4" / "snapshots" / "beef0001"
     qwen_model.mkdir(parents=True)
     (qwen_model / "model.safetensors").write_bytes(b"fake qwen pack")
+    # LTX-2.3 keeps its text encoder in a companion checkpoint (Gemma 3 12B) that the
+    # client never names: the bridge hands the engine the server's snapshot (A2). The media
+    # matrix's ltx-2 job needs one on disk; empty files suffice for the stub engine, which
+    # reads no weights.
+    gemma = (model_root / "models--mlx-community--gemma-3-12b-it-4bit" / "snapshots"
+             / "86cc6a8dedbc456dd0e4af01a9d09f396f77e558")
+    gemma.mkdir(parents=True)
+    for name in ["config.json", "tokenizer.json",
+                 "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]:
+        (gemma / name).write_bytes(b"companion fixture")
 
     (staging_home / "config.json").write_text(json.dumps({
         "port": port, "token": token, "engine_path": str(STUB), "model_root": str(model_root),
