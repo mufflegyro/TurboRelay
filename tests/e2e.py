@@ -519,6 +519,18 @@ def main() -> None:
               missing_encoder is not None and "text encoder" in missing_encoder.get("message", ""),
               str(missing_encoder))
 
+        # A clip's poster is part of the job registry, so a result delivered after a reconnect
+        # still has its thumbnail.
+        status, body = http("GET", port, "/jobs")
+        jobs_now = json.loads(body)["jobs"]
+        ltx_job = next((j for j in jobs_now if j["id"] == "e2e4444-4444-4444-8444-444444444440"), None)
+        check("a clip's poster is in the job registry",
+              ltx_job is not None and ltx_job.get("poster_file_id"), str(ltx_job))
+        if ltx_job and ltx_job.get("poster_file_id"):
+            status, poster_png = http("GET", port, f"/files/{ltx_job['poster_file_id']}")
+            check("the registered poster is a PNG",
+                  status == 200 and poster_png[:8] == b"\x89PNG\r\n\x1a\n", str(status))
+
         # Engine crash mid-job (#1): kill the stub while a generation runs; the bridge must
         # fail the job loudly and the supervisor must bring the engine back.
         crash_job = "e2e3333-3333-4333-8333-333333333333"

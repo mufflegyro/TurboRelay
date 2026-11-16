@@ -23,6 +23,8 @@ public final class Bridge: @unchecked Sendable {
         var status: String
         var submittedAt: Date
         var fileID: String?
+        /// The clip's poster PNG, staged like the result (it is the history thumbnail and Quick Look still).
+        var posterID: String?
         var error: String?
         var engine: ModelEngine
     }
@@ -202,6 +204,7 @@ public final class Bridge: @unchecked Sendable {
                 "submitted_at": ISO8601DateFormatter().string(from: job.submittedAt),
             ]
             if let fileID = job.fileID { entry["file_id"] = fileID }
+            if let posterID = job.posterID { entry["poster_file_id"] = posterID }
             if let error = job.error { entry["error"] = error }
             return entry
         }
@@ -554,11 +557,13 @@ public final class Bridge: @unchecked Sendable {
                 let attributes = try? FileManager.default.attributesOfItem(atPath: path)
                 wire["size"] = (attributes?[.size] as? Int) ?? 0
             }
+            var posterID: String?
             if let poster = wire["poster"] as? String {
                 wire.removeValue(forKey: "poster")
-                wire["poster_file_id"] = stageResultFile(at: URL(fileURLWithPath: poster), mediaType: "image/png")
+                posterID = stageResultFile(at: URL(fileURLWithPath: poster), mediaType: "image/png")
+                wire["poster_file_id"] = posterID
             }
-            finishJob(jobID, status: "done", error: nil, fileID: wire["file_id"] as? String)
+            finishJob(jobID, status: "done", error: nil, fileID: wire["file_id"] as? String, posterID: posterID)
         case "failed":
             finishJob(dict["id"] as? String, status: "failed", error: dict["message"] as? String)
         case "cancelled":
@@ -673,7 +678,7 @@ public final class Bridge: @unchecked Sendable {
     /// A job left the engine (done, failed, cancelled): update the registry, release its
     /// upload references, sweep unreferenced uploads, and release keep-awake when nothing is
     /// running.
-    private func finishJob(_ id: String?, status: String, error: String?, fileID: String? = nil) {
+    private func finishJob(_ id: String?, status: String, error: String?, fileID: String? = nil, posterID: String? = nil) {
         guard let id else { return }
         var engine: ModelEngine?
         var wasActive = false
@@ -683,6 +688,7 @@ public final class Bridge: @unchecked Sendable {
             job.status = status
             job.error = error
             if let fileID { job.fileID = fileID }
+            if let posterID { job.posterID = posterID }
             jobs[id] = job
             engine = job.engine
             if wasActive {
