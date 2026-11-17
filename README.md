@@ -14,6 +14,33 @@ SwiftUI ── RemoteBackend ── WS+HTTP ── bridge ─┬─ turbo-engine
 One model at a time: the router stops the engine that does not serve the job's family, so
 only the active engine holds weights.
 
+## Get the menu bar app
+
+**[⬇ Download TurboRelay](https://github.com/mufflegyro/TurboRelay/releases/latest)** — a disk image
+for Apple silicon, macOS 15 or later, from this repository's releases. It is signed with the
+project's own certificate and not notarized: the first launch needs *right-click → Open*, or
+`xattr -dr com.apple.quarantine "/Applications/TurboRelay.app"`.
+
+1. Open the image, drag **TurboRelay** to Applications and open it. There is no window: the menu
+   bar item is the app. macOS asks once for local network access — allow it, or nothing can
+   connect.
+2. The first launch writes `~/Library/Application Support/TurboRelay/config.json` with port **7700**
+   and a pairing token of its own; *Copy Pairing Token* in the menu bar puts it on the clipboard.
+3. On the Mac running Turbo MLX: **Settings → Remote Render**, turn on *Render on another Mac*,
+   enter `http://<relay-mac>.local:7700` (or that Mac's address on the network), paste the token and
+   press *Apply*. Switching stops the local engine and loads the relay's model list.
+4. Models download to the relay's own Hugging Face cache (`~/.cache/huggingface`) the first time a
+   job asks for one; the other Mac never needs them.
+5. The first job for Krea 2 or Qwen-Image 2.1 (the families only mflux serves) installs the mflux
+   fallback — Python 3.13, mflux 0.24.0, ~1.1 GB, with `uv` — into
+   `~/Library/Application Support/TurboRelay/mflux-venv`. The menu bar says *mflux not installed*
+   until that finishes, and `/models` reports the progress.
+6. Port **7700** has to reach the relay from the client Mac. When nothing connects, check that
+   first: a firewall, or the two Macs on different networks, are the usual causes.
+
+The menu bar shows the port, the engine state, connected clients and the model in memory, and can
+open the staging folder that finished results are served from.
+
 ## Layout
 
 | Path | What |
@@ -30,6 +57,8 @@ only the active engine holds weights.
 
 ```bash
 ./build.sh                 # → build/TurboRelay.app (menu bar; embeds an engine)
+./package.sh               # → build/TurboRelay-<version>.dmg for another Mac: signs, scrubs
+                           #   this Mac's paths out of the binaries, verifies the mounted image
 swift run RelayServer      # headless, prints the port and pairing token
 python3 tests/e2e.py       # loopback end-to-end (needs a release build)
 (cd StubEngine && ./run-conformance.sh)   # protocol conformance
