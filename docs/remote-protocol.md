@@ -1,7 +1,7 @@
 # TurboRelay remote protocol
 
-The protocol between Turbo MLX (client, on the weak Mac) and TurboRelay (the
-menu bar server, on the powerful Mac). Signed off 2026-11-12: native
+The protocol between [Turbo MLX](https://github.com/mufflegyro/turbo-mlx-network) (client, on the
+weak Mac) and TurboRelay (the menu bar server, on the powerful Mac). Signed off 2026-11-12: native
 `turbo-engine` on the server, full catalog passthrough, downloads-first
 milestone order.
 

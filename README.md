@@ -1,8 +1,9 @@
 # TurboRelay
 
-The server side of Turbo MLX's remote rendering: a menu bar app for the powerful Mac
-(M4 Max) that owns model downloading and generation, while Turbo MLX's UI runs on any
-other Mac on the network. The protocol both sides speak is specified in
+The server side of [Turbo MLX](https://github.com/mufflegyro/turbo-mlx-network)'s remote rendering: a menu bar app for the powerful Mac
+(M4 Max) that owns model downloading and generation, while the
+[Turbo MLX](https://github.com/mufflegyro/turbo-mlx-network) app's UI runs on any other Mac on the
+network. The protocol both sides speak is specified in
 [docs/remote-protocol.md](docs/remote-protocol.md).
 
 ```
@@ -16,6 +17,11 @@ only the active engine holds weights.
 
 ## Get the menu bar app
 
+This is the server half; the client is
+**[Turbo MLX](https://github.com/mufflegyro/turbo-mlx-network)** — its
+[latest build](https://github.com/mufflegyro/turbo-mlx-network/releases/latest) is the app that
+talks to this one.
+
 **[⬇ Download TurboRelay](https://github.com/mufflegyro/TurboRelay/releases/latest)** — a disk image
 for Apple silicon, macOS 15 or later, from this repository's releases. It is signed with the
 project's own certificate and not notarized: the first launch needs *right-click → Open*, or
@@ -26,9 +32,10 @@ project's own certificate and not notarized: the first launch needs *right-click
    connect.
 2. The first launch writes `~/Library/Application Support/TurboRelay/config.json` with port **7700**
    and a pairing token of its own; *Copy Pairing Token* in the menu bar puts it on the clipboard.
-3. On the Mac running Turbo MLX: **Settings → Remote Render**, turn on *Render on another Mac*,
-   enter `http://<relay-mac>.local:7700` (or that Mac's address on the network), paste the token and
-   press *Apply*. Switching stops the local engine and loads the relay's model list.
+3. On the Mac running [Turbo MLX](https://github.com/mufflegyro/turbo-mlx-network): **Settings →
+   Remote Render**, turn on *Render on another Mac*, enter `http://<relay-mac>.local:7700` (or that
+   Mac's address on the network), paste the token and press *Apply*. Switching stops the local
+   engine and loads the relay's model list.
 4. Models download to the relay's own Hugging Face cache (`~/.cache/huggingface`) the first time a
    job asks for one; the other Mac never needs them.
 5. The first job for Krea 2 or Qwen-Image 2.1 (the families only mflux serves) installs the mflux
